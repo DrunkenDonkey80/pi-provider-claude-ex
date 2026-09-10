@@ -221,28 +221,194 @@ export async function loginAnthropicOAuth(
 export async function refreshAnthropicOAuth(
 	credential: Pick<AnthropicOAuthCredential, "refresh">,
 ): Promise<AnthropicOAuthCredential> {
-	let responseBody: string;
+	const outcome = await refreshGrant(credential.refresh);
+	if (!outcome.credential)
+		throw new Error(`Anthropic token refresh failed (${outcome.error}).`);
+	return outcome.credential;
+}
+
+// ─── classified refresh grant ────────────────────────────────────────────────
+// Upstream treated any /401|authentication_error/ in the error TEXT as a dead
+// account, so one proxy hiccup permanently dropped a live login. RFC 6749 §5.2
+// says the verdict is the top-level `error` member of a 4xx JSON body — nothing
+// else is permanent. A misclassified transient costs one retry; a misclassified
+// permanent throws away a working subscription.
+
+export type RefreshError =
+	| "invalid_grant" // this refresh lineage is dead → /login again
+	| "invalid_client" // OUR client_id was rejected → systemic, blames no account
+	| "no_refresh_token"
+	| "transient"; // network/5xx/unparseable → retry later, token may live
+
+export interface RefreshOutcome {
+	credential?: AnthropicOAuthCredential;
+	error?: RefreshError;
+	/** Login (refresh-token) expiry in epoch ms, when the server reports it. */
+	refreshExpires?: number;
+}
+
+export async function refreshGrant(refresh: string): Promise<RefreshOutcome> {
+	if (!refresh) return { error: "no_refresh_token" };
+	let response: Response;
+	let body: string;
 	try {
-		responseBody = await postJson(TOKEN_URL, {
-			grant_type: "refresh_token",
-			client_id: CLIENT_ID,
-			refresh_token: credential.refresh,
+		response = await fetch(TOKEN_URL, {
+			method: "POST",
+			headers: { "Content-Type": "application/json", Accept: "application/json" },
+			body: JSON.stringify({
+				grant_type: "refresh_token",
+				client_id: CLIENT_ID,
+				refresh_token: refresh,
+			}),
+			signal: AbortSignal.timeout(30_000),
 		});
-	} catch (error) {
-		throw new Error(`Anthropic token refresh request failed. details=${formatErrorDetails(error)}`);
+		body = await response.text();
+	} catch {
+		return { error: "transient" };
 	}
-	const data = JSON.parse(responseBody) as {
+	if (!response.ok) {
+		if (response.status === 400 || response.status === 401 || response.status === 403) {
+			let err: unknown;
+			try {
+				err = (JSON.parse(body) as { error?: unknown }).error;
+			} catch {
+				err = undefined; // unparseable body → stay transient
+			}
+			if (err === "invalid_grant" || err === "invalid_client")
+				return { error: err };
+		}
+		return { error: "transient" };
+	}
+	let data: {
 		refresh_token?: string;
 		access_token?: string;
 		expires_in?: number;
+		refresh_token_expires_in?: number;
+		refresh_expires_in?: number;
 	};
-	if (!data.access_token || !data.expires_in) {
-		throw new Error("Anthropic token refresh response did not contain complete OAuth credentials.");
+	try {
+		data = JSON.parse(body) as typeof data;
+	} catch {
+		return { error: "transient" };
 	}
+	if (!data.access_token || !data.expires_in) return { error: "transient" };
+	const refreshTtl = data.refresh_token_expires_in ?? data.refresh_expires_in;
 	return {
-		type: "oauth",
-		refresh: data.refresh_token ?? credential.refresh,
-		access: data.access_token,
-		expires: Date.now() + data.expires_in * 1000 - 5 * 60 * 1000,
+		credential: {
+			type: "oauth",
+			refresh: data.refresh_token ?? refresh,
+			access: data.access_token,
+			// Raw expiry. The pre-expiry safety margin lives in the pool, so the
+			// buffer isn't applied twice (upstream baked 5min in here AND there).
+			expires: Date.now() + data.expires_in * 1000,
+		},
+		refreshExpires: refreshTtl ? Date.now() + refreshTtl * 1000 : undefined,
 	};
+}
+
+// ─── usage / quota ───────────────────────────────────────────────────────────
+// Same endpoint Claude Code and claude-swap read. Budget is ~28-30 requests per
+// trailing 60-minute window per identity with NO refill (a burst blocks the
+// account for a full hour), so all polling goes through usage.ts's cadence.
+
+export interface UsageWindow {
+	pct: number;
+	resets_at?: string;
+}
+export interface UsageSnapshot {
+	five_hour?: UsageWindow;
+	seven_day?: UsageWindow;
+	/** Per-model weekly windows, e.g. { name: "Fable", pct: 12 }. */
+	scoped?: { name: string; pct: number; resets_at?: string }[];
+	spend?: { used: number; limit: number; pct: number; currency: string };
+}
+
+export class UsageHttpError extends Error {
+	// Explicit fields, not constructor parameter properties: Node's strip-only
+	// TypeScript loader (used by `cpool` and the self-check) rejects those.
+	status: number;
+	retryAfterS?: number;
+	constructor(status: number, retryAfterS?: number) {
+		super(`usage http-${status}`);
+		this.status = status;
+		this.retryAfterS = retryAfterS;
+	}
+}
+
+export async function fetchUsage(access: string): Promise<UsageSnapshot> {
+	const response = await fetch("https://api.anthropic.com/api/oauth/usage", {
+		headers: {
+			Authorization: `Bearer ${access}`,
+			"anthropic-beta": "oauth-2025-04-20",
+		},
+		signal: AbortSignal.timeout(10_000),
+	});
+	if (!response.ok) {
+		const raw = response.headers.get("retry-after");
+		const retry = raw ? Number(raw) : undefined;
+		throw new UsageHttpError(
+			response.status,
+			Number.isFinite(retry) ? (retry as number) : undefined,
+		);
+	}
+	return parseUsage((await response.json()) as Record<string, unknown>);
+}
+
+export function parseUsage(data: Record<string, unknown>): UsageSnapshot {
+	const out: UsageSnapshot = {};
+	const win = (raw: unknown): UsageWindow | undefined => {
+		if (!raw || typeof raw !== "object") return undefined;
+		const w = raw as { utilization?: unknown; resets_at?: unknown };
+		if (typeof w.utilization !== "number") return undefined;
+		return {
+			pct: w.utilization,
+			resets_at: typeof w.resets_at === "string" ? w.resets_at : undefined,
+		};
+	};
+	out.five_hour = win(data.five_hour);
+	out.seven_day = win(data.seven_day);
+
+	if (Array.isArray(data.limits)) {
+		const scoped: NonNullable<UsageSnapshot["scoped"]> = [];
+		for (const lim of data.limits) {
+			if (!lim || typeof lim !== "object") continue;
+			const l = lim as {
+				scope?: { model?: { display_name?: unknown } };
+				percent?: unknown;
+				resets_at?: unknown;
+			};
+			const name = l.scope?.model?.display_name;
+			if (typeof name !== "string" || typeof l.percent !== "number") continue;
+			scoped.push({
+				name,
+				pct: l.percent,
+				resets_at: typeof l.resets_at === "string" ? l.resets_at : undefined,
+			});
+		}
+		if (scoped.length) out.scoped = scoped;
+	}
+
+	const eu = data.extra_usage as
+		| {
+				is_enabled?: boolean;
+				used_credits?: number | null;
+				monthly_limit?: number | null;
+				utilization?: number | null;
+				currency?: string;
+		  }
+		| undefined;
+	if (
+		eu?.is_enabled &&
+		typeof eu.used_credits === "number" &&
+		typeof eu.monthly_limit === "number" &&
+		typeof eu.utilization === "number"
+	) {
+		out.spend = {
+			used: eu.used_credits / 100,
+			limit: eu.monthly_limit / 100,
+			pct: eu.utilization,
+			currency: eu.currency ?? "USD",
+		};
+	}
+	return out;
 }

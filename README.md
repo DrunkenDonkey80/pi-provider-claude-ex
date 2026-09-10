@@ -1,170 +1,132 @@
-# @zgltyq/pi-provider-claude
+# pi-provider-claude-plus
 
-Claude (Anthropic **OAuth / subscription**) compatibility layer for
-[pi-coding-agent](https://pi.dev). Keeps **all** your extension tools usable
-under the Claude subscription.
+Claude (Anthropic **OAuth / subscription**) layer for [pi-coding-agent](https://pi.dev).
 
-It is a self-contained fork of the tool-handling half of
-[`@benvargas/pi-claude-code-use`](https://www.npmjs.com/package/@benvargas/pi-claude-code-use)
-(MIT) — credit to Ben Vargas for the original approach.
+Fork of [`@zgltyq/pi-provider-claude`](https://github.com/ZGltYQ/pi-provider-claude) (MIT,
+itself a fork of `@benvargas/pi-claude-code-use`). The tool-compatibility half is
+kept as-is; the account pool is rewritten around the token-liveness model used by
+[claude-swap](https://github.com/realiti4/claude-swap), and quota status + account
+switching are new.
 
-## Problem
+## What it does
 
-Anthropic's OAuth (subscription) request path appears to fingerprint tool names.
-Tools that are **not** part of the Claude Code core set and are **not** prefixed
-`mcp__` can be classified as *extra usage*. The upstream extension defends against
-this by **dropping every unknown flat-named tool** before the request is sent —
-which silently hides legitimate extension tools from Claude:
+1. **Keeps every extension tool usable** on the subscription path — unknown flat
+   tool names are renamed on the wire to `mcp__pi__<name>` (not dropped) and
+   renamed back before Pi executes them.
+2. **Multi-account pool that stops expiring** (see below).
+3. **Quota status + switching** — 5-hour, 7-day and per-model weekly windows,
+   from `/claude-pool` in pi or `cpool` in a terminal.
 
-`ask_user_question`, `todo`, `subagent`, `ast_grep_search`, `lsp_diagnostics`,
-`ctx_*`, `web_search`, `ralph_*`, `preview_export`, … all disappear, even though
-they work fine for non-Anthropic models.
+## Why upstream's pooled logins kept dying
 
-## What this does
+Anthropic **rotates** refresh tokens: every successful grant returns a new
+`refresh_token` and invalidates the one you POSTed. Upstream kept the pool in
+process memory and rewrote the whole file with `writeFileSync`, with a 4-minute
+refresh sweep per session. So:
 
-Instead of dropping unknown flat tools, it **renames them in place on the wire**
-to `mcp__pi__<name>`:
+| upstream | this fork |
+|---|---|
+| no locking; whole-file write from a process-local snapshot | directory (mkdir) lock + read-modify-write on every mutation |
+| refresh token POSTed from a stale snapshot | consume-gate re-read **inside** a per-lineage lock; a generation that someone else already rotated is never POSTed |
+| rotated token lived only in memory until the write; failures swallowed | successor **stash** written before the store write and adopted on next read, so a crash can't lose a lineage |
+| any `401`/`authentication_error` in the error *text* → account marked invalid | permanent only on a parsed top-level `invalid_grant` (RFC 6749 §5.2); transient failures get a short quarantine and a strike |
+| eager 4-min sweep of every account, every session | lazy: a grant only within 10 min of expiry, plus one deliberate keep-alive grant per lineage idle >20 days |
+| cooldown/active account in memory, lost on restart | persisted (`active`, `cooldownUntil`, `disabled`, `dead`) |
+| — | best-effort cooperation with Claude Code's own `~/.claude/.oauth_refresh.lock` |
+| — | optional single-writer `cpool daemon` so N sessions don't sweep in parallel |
 
-- ✅ `mcp__*` shape passes Anthropic's classifier → **no extra-usage charge**
-- ✅ the tool stays **visible to Claude** → it can actually call it
-- ✅ on the way back, calls to `mcp__pi__*` are rewritten to the original flat
-  name **before Pi executes them**, so the real tool (and its closure-bound
-  state) runs unchanged
+Net effect: far fewer grants, and no two writers ever spending the same
+generation — which is what actually keeps a login alive.
 
-Untouched: native Anthropic tools (objects with a `type` field, e.g.
-`web_search`), anything already `mcp__`-prefixed, and the Claude Code core tools.
-The extension only activates for **Anthropic + OAuth** — API-key auth and
-non-Anthropic providers pass through completely unchanged.
+## Commands (in pi)
 
-It also applies the upstream system-prompt rewrite (`pi itself` → `the cli
-itself`, etc.) on the OAuth path.
-
-## Why it's lightweight
-
-The tool's full JSON schema already rides inside the outbound payload, so the fix
-is a pure rename — **no jiti capture, no tool re-registration, no typebox**. The
-only import is a TypeScript type (erased at runtime), so the extension has **zero
-runtime dependencies**.
-
-## Install
-
-```bash
-pi install npm:@zgltyq/pi-provider-claude
+```
+/claude-pool                 list accounts with quota → pick one to switch to
+/claude-pool <n|label>       switch directly
+/claude-pool-status          same list as text
+/claude-pool-add <label>     snapshot the current /login anthropic account
+/claude-pool-remove <n|label>
+/claude-pool-disable <n|label>   hold out of / return to rotation (toggle)
 ```
 
-Then remove the upstream one so they don't both transform the payload:
+A row looks like:
 
-```bash
-pi remove npm:@benvargas/pi-claude-code-use
+```
+▸ 2. datecs:flex1 · 5h 34% (2h 11m) · 7d 71% (3d 4h) · Fable 12% · login exp 2026-11-04
 ```
 
-Restart Pi (or `/reload`) and continue using the normal `anthropic` provider with
-your OAuth login.
+## CLI (`cpool`) — works outside pi
 
-## Verify
+Safe to run while pi sessions are live (same locks); a switch is picked up by
+running sessions within ~2s, no restart.
 
 ```bash
-PI_CLAUDE_PROVIDER_DEBUG_LOG=/tmp/claude-provider.log pi
-# send one message, then quit
+cpool list [--json]        # accounts with 5h / weekly quota
+cpool switch 2             # pin account 2 (bare `switch` rotates)
+cpool switch datecs:work   # by label or unique substring
+cpool add work             # snapshot auth.json's /login account
+cpool disable 3            # toggle out of rotation
+cpool refresh [n|label]    # force a token refresh
+cpool daemon [--once]      # single-writer keep-alive + usage sweep
 ```
 
-In `/tmp/claude-provider.log`, the `"after"` payload's `tools[]` should show your
-extension tools as `mcp__pi__<name>` and **nothing dropped**.
+Run `cpool daemon` (systemd/Task Scheduler/`--once` from cron) if you want the
+pool kept warm even when no pi session is open.
 
-## Multi-account failover (opt-in)
+## Enrolling accounts
 
-If you have **two subscription accounts** (e.g. personal + work), the extension can
-fail over between them: when the active account hits its rate / usage cap (429/529),
-it's put on cooldown and the next turn transparently continues on the other account.
-Subscription billing is preserved (Pi detects the OAuth path from the token shape).
-
-**Priority:** array order in `claude-pool.json` IS the priority. `accounts[0]` is the
-primary — failover is non-sticky, so as soon as the primary's cooldown expires the
-pool returns to it automatically. Put your preferred account first.
-
-**Detection (v1.2.0):** pi-ai's anthropic transport only emits
-`after_provider_response` for *successful* requests — the Anthropic SDK throws on
-429/529 before that callback runs, so header-based detection alone never fires.
-Since v1.2.0 the primary detector pattern-matches the provider error that lands on
-the assistant message (`stopReason: "error"`) via `message_end`, including Claude's
-`"usage limit reached|<epoch>"` reset timestamps for accurate cooldowns. When a cap
-is hit, the turn errors once, the pool flips (with a UI notification), and you just
-resend your message to continue on the other account.
-
-**OAuth compatibility and background token refresh (v1.3.3):** The pool now
-uses its own Anthropic OAuth login/refresh adapter and the login callback bridge
-matches pi 0.81.x, where the old runtime OAuth export is no longer available.
-OAuth access tokens are short-lived. An account that sat idle (e.g. your fallback)
-would have a dead access token by the time failover switched to it — producing a
-`401 authentication_error`. v1.3.3 also applies `/claude-pool-add` immediately to
-the running session and excludes accounts whose refresh token is expired or revoked:
-
-- A `setInterval` keep-warm loop that refreshes **every** pooled account before it
-  expires, even when idle and not the active account (the timer is `unref()`'d so
-  it never blocks CLI commands like `pi update` from exiting).
-- A wider 5-minute pre-expiry refresh buffer, and a full-pool refresh on
-  `session_start` / `before_agent_start` (not just the active account).
-- Reactive 401 handling: if the server rejects the active token anyway, it is
-  force-refreshed in place (no account switch) so the resend succeeds. If the
-  refresh token itself was revoked, you're told to re-run `/login` +
-  `/claude-pool-add <label>`.
-
-It is **inert** unless `<agentDir>/claude-pool.json` exists with ≥2 accounts and
-`"enabled" !== false`.
-
-### Enroll accounts with the native `/login` (recommended)
-
-`/login anthropic` only keeps ONE credential (a second login overwrites the first),
-so the extension adds a command to snapshot each login into the pool:
+`/login anthropic` only keeps one credential, so snapshot each login:
 
 ```
 /login anthropic          → sign in with account A
-/claude-pool-add personal → stash account A in the pool
+/claude-pool-add personal
 /login anthropic          → sign in with account B (overwrites auth.json — fine)
-/claude-pool-add work      → stash account B in the pool
-/claude-pool-status        → verify both are present
+/claude-pool-add work
+/claude-pool              → verify both, pick the active one
 ```
 
-Restart after initially creating the pool to activate failover. Once active,
-`/claude-pool-add <label>` updates both `claude-pool.json` and the running session,
-so replacing a revoked credential no longer requires another restart.
+Do **not** `/logout` between logins — current Claude Code revokes the refresh
+token of the account you leave.
 
-### Alternative: harvest via separate profiles
+## Quota reads
 
-```bash
-PI_CODING_AGENT_DIR=~/.pi-personal pi    # /login anthropic  (personal)
-PI_CODING_AGENT_DIR=~/.pi-work     pi    # /login anthropic  (work)
-./harvest-claude-pool.sh                 # writes ~/.pi/agent/claude-pool.json
-```
+`GET https://api.anthropic.com/api/oauth/usage` (`anthropic-beta:
+oauth-2025-04-20`) — the same endpoint Claude Code and claude-swap use. Its
+budget is ~28–30 requests per identity per *trailing* 60-minute window with no
+gradual refill, so a burst blocks an account for a full hour. All reads therefore
+go through one shared on-disk cache: 180s serve TTL, 180s minimum interval, at
+most 2 accounts per sweep, `Retry-After` + 60s margin on a 429. Repainting a list
+costs zero requests.
 
-`claude-pool.json` shape:
+## Files (in `$PI_CODING_AGENT_DIR`, default `~/.pi/agent`)
 
-```json
-{ "enabled": true, "accounts": [
-  { "label": "personal", "refresh": "...", "access": "...", "expires": 0 },
-  { "label": "work",     "refresh": "...", "access": "...", "expires": 0 }
-] }
-```
-
-Kill switch: `PI_CLAUDE_PROVIDER_POOL_DISABLE=1` (or `"enabled": false`).
+| file | contents |
+|---|---|
+| `claude-pool.json` | accounts, active pin, cooldowns (mode 0600) |
+| `claude-pool.stash.json` | rotated successor awaiting its store write |
+| `claude-pool-usage.json` | quota cache + per-account poll schedule |
+| `claude-pool-daemon.json` | daemon heartbeat |
 
 ## Environment variables
 
-| Variable | Effect |
+| variable | effect |
 |---|---|
-| `PI_CLAUDE_PROVIDER_DEBUG_LOG=/path` | Append `before`/`after`/`pool` events for debugging. |
-| `PI_CLAUDE_PROVIDER_DISABLE=1` | Pass all tools through with flat names (no renaming). Debug escape hatch. |
-| `PI_CLAUDE_PROVIDER_POOL_DISABLE=1` | Disable multi-account failover even if `claude-pool.json` exists. |
+| `PI_CLAUDE_PROVIDER_DEBUG_LOG=/path` | append request payloads + pool events |
+| `PI_CLAUDE_PROVIDER_DISABLE=1` | pass tools through flat (debug) |
+| `PI_CLAUDE_PROVIDER_POOL_DISABLE=1` | disable the pool entirely |
 
-## How it differs from `@benvargas/pi-claude-code-use`
+## Test
 
-| | upstream | this fork |
-|---|---|---|
-| Unknown flat tools | **dropped** | **renamed** `mcp__pi__<name>` (kept) |
-| Alias scheme | per-tool config + jiti capture + re-registration | generic in-place rename (deterministic prefix) |
-| Runtime deps | `@mariozechner/jiti` | none |
-| Scope | tool filtering + companion aliases + system-prompt rewrite | tool renaming + system-prompt rewrite |
+```bash
+node test.ts     # 15 asserts: locking, stash adoption, selection, backoff, parsing
+```
 
-## License
+## Not ported from claude-swap
 
-MIT. Based on `@benvargas/pi-claude-code-use` (MIT).
+macOS Keychain storage, parallel per-terminal sessions (`cswap run`), the Textual
+TUI, the menu bar, and the `consume-first` weekly-quota strategy. The switching
+strategy here is: stay pinned while usable, else the account with the most known
+quota left.
+
+MIT. Credit: `@zgltyq/pi-provider-claude`, `@benvargas/pi-claude-code-use`,
+and `realiti4/claude-swap` for the liveness and cadence model.

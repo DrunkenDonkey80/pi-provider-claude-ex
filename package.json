@@ -1,51 +1,54 @@
 {
-  "name": "@zgltyq/pi-provider-claude",
-  "version": "1.3.3",
-  "description": "Claude (Anthropic OAuth/subscription) compatibility layer for pi-coding-agent — keeps ALL extension tools usable under the Claude subscription by mapping unknown flat tool names to mcp__pi__<name> on the wire instead of dropping them, plus optional multi-account failover. Self-contained fork of the tool half of @benvargas/pi-claude-code-use.",
-  "author": "Leechael",
-  "license": "MIT",
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/ZGltYQ/pi-provider-claude"
-  },
-  "homepage": "https://github.com/ZGltYQ/pi-provider-claude#readme",
-  "bugs": {
-    "url": "https://github.com/ZGltYQ/pi-provider-claude/issues"
-  },
-  "keywords": [
-    "pi-package",
-    "pi-extension",
-    "pi-provider",
-    "pi",
-    "pi-coding-agent",
-    "pi-mono",
-    "coding-agent",
-    "anthropic",
-    "claude",
-    "claude-code",
-    "oauth",
-    "subscription",
-    "tools",
-    "fork"
-  ],
-  "type": "module",
-  "files": [
-    "index.ts",
-    "oauth.ts",
-    "package.json",
-    "README.md",
-    "LICENSE",
-    "harvest-claude-pool.sh"
-  ],
-  "pi": {
-    "extensions": [
-      "./index.ts"
-    ]
-  },
-  "peerDependencies": {
-    "@earendil-works/pi-coding-agent": ">=0.74.0"
-  },
-  "publishConfig": {
-    "access": "public"
-  }
+	"name": "pi-provider-claude-plus",
+	"version": "2.0.0",
+	"description": "Claude (Anthropic OAuth/subscription) layer for pi-coding-agent: keeps ALL extension tools usable under the subscription, plus a crash-safe multi-account pool with cross-process locking, keep-alive token refresh, 5h/weekly quota status, and a `cpool` CLI. Fork of @zgltyq/pi-provider-claude with the token-liveness model from claude-swap.",
+	"license": "MIT",
+	"keywords": [
+		"pi-package",
+		"pi-extension",
+		"pi-provider",
+		"pi",
+		"pi-coding-agent",
+		"anthropic",
+		"claude",
+		"claude-code",
+		"oauth",
+		"subscription",
+		"multi-account",
+		"quota",
+		"fork"
+	],
+	"type": "module",
+	"bin": {
+		"cpool": "./bin/cpool.ts"
+	},
+	"files": [
+		"index.ts",
+		"oauth.ts",
+		"store.ts",
+		"pool.ts",
+		"usage.ts",
+		"tools.ts",
+		"format.ts",
+		"commands.ts",
+		"bin/cpool.ts",
+		"test.ts",
+		"package.json",
+		"README.md",
+		"LICENSE"
+	],
+	"pi": {
+		"extensions": [
+			"./index.ts"
+		]
+	},
+	"scripts": {
+		"test": "node test.ts"
+	},
+	"engines": {
+		"node": ">=22.18"
+	},
+	"peerDependencies": {
+		"@earendil-works/pi-coding-agent": ">=0.74.0"
+	}
 }

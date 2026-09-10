@@ -1,0 +1,250 @@
+/** Slash commands: list accounts with quota, switch, add, enable/disable. */
+
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { AGENT_DIR, type Account, mutateStore, readStore } from "./store.ts";
+import {
+	activeAccount,
+	ensureFresh,
+	invalidateSnapshot,
+	pickActive,
+	setActive,
+} from "./pool.ts";
+import { accountLine, poolTable, resolveAccount } from "./format.ts";
+import { collectUsage, readUsage } from "./usage.ts";
+
+interface Ui {
+	notify: (m: string, level?: string) => void;
+	select: (title: string, options: string[]) => Promise<string | undefined>;
+	confirm?: (title: string, body?: string) => Promise<boolean>;
+}
+type Ctx = { ui: Ui };
+type Register = (
+	name: string,
+	def: {
+		description: string;
+		handler: (args: string, ctx: Ctx) => Promise<void>;
+	},
+) => void;
+
+/** Read the single-slot anthropic OAuth creds the native /login wrote. */
+function readAnthropicAuth():
+	| { refresh: string; access: string; expires: number }
+	| undefined {
+	try {
+		const path = join(AGENT_DIR, "auth.json");
+		if (!existsSync(path)) return undefined;
+		const a = (
+			JSON.parse(readFileSync(path, "utf-8")) as {
+				anthropic?: { refresh?: string; access?: string; expires?: number };
+			}
+		).anthropic;
+		if (!a?.access || !a?.refresh) return undefined;
+		return { refresh: a.refresh, access: a.access, expires: a.expires ?? 0 };
+	} catch {
+		return undefined;
+	}
+}
+
+/** Top up the usage cache for the accounts shown in an interactive list. */
+async function refreshVisibleUsage(force: boolean): Promise<void> {
+	const labels = readStore()
+		.accounts.filter((a) => !a.dead)
+		.map((a) => a.label);
+	// force=true is a user-initiated refresh: allow the whole (small) pool, but
+	// the 180s cache floor still protects the endpoint's hourly budget.
+	await collectUsage(
+		labels,
+		async (label) => (await ensureFresh(label))?.access,
+		{ max: force ? labels.length : 2, force: false },
+	);
+}
+
+export function setupCommands(pi: ExtensionAPI): void {
+	// SAFETY: Pi's public registerCommand type is generic over its own ctx; the
+	// handler only ever touches ctx.ui.{notify,select}, which every Pi build
+	// provides. Narrowing to Ui keeps this file independent of the ctx type's
+	// version-to-version churn.
+	const register = pi.registerCommand as unknown as Register;
+
+	register("claude-pool", {
+		description: "Claude accounts: quota status, switch active account",
+		handler: async (args, ctx) => {
+			const store = readStore();
+			if (!store.accounts.length) {
+				ctx.ui.notify(
+					"No pooled Claude accounts. Run /login anthropic, then /claude-pool-add <label>.",
+					"info",
+				);
+				return;
+			}
+			// An explicit target skips the menu: /claude-pool 2, /claude-pool work
+			if (args.trim()) {
+				const target = resolveAccount(store.accounts, args);
+				if (!target) {
+					ctx.ui.notify(`No account matches "${args.trim()}".`, "warning");
+					return;
+				}
+				await setActive(target.label);
+				await ensureFresh(target.label);
+				ctx.ui.notify(`Claude account → "${target.label}".`, "info");
+				return;
+			}
+
+			await refreshVisibleUsage(false);
+			const fresh = readStore();
+			const cache = readUsage();
+			const active = pickActive(fresh);
+			const rows = fresh.accounts.map((a, i) =>
+				accountLine(a, i, cache[a.label], a.label === active),
+			);
+			const REFRESH = "↻ refresh usage now";
+			const TOGGLE = "⏸ enable / disable an account…";
+			const choice = await ctx.ui.select("Claude accounts — pick one to switch", [
+				...rows,
+				REFRESH,
+				TOGGLE,
+			]);
+			if (!choice) return; // Esc
+
+			if (choice === REFRESH) {
+				await refreshVisibleUsage(true);
+				const c2 = readUsage();
+				const f2 = readStore();
+				ctx.ui.notify(poolTable(f2.accounts, pickActive(f2), c2), "info");
+				return;
+			}
+			if (choice === TOGGLE) {
+				const pick = await ctx.ui.select(
+					"Toggle account",
+					fresh.accounts.map(
+						(a, i) => `${i + 1}. ${a.label} — ${a.disabled ? "disabled" : "enabled"}`,
+					),
+				);
+				if (!pick) return;
+				const index = Number(pick.split(".")[0]) - 1;
+				const target = fresh.accounts[index];
+				if (!target) return;
+				const next = await toggleDisabled(target.label);
+				ctx.ui.notify(
+					`"${target.label}" is now ${next ? "disabled" : "enabled"}.`,
+					"info",
+				);
+				return;
+			}
+
+			const index = rows.indexOf(choice);
+			const target = fresh.accounts[index];
+			if (!target) return;
+			await setActive(target.label);
+			const account = await ensureFresh(target.label);
+			ctx.ui.notify(
+				account?.dead
+					? `Switched to "${target.label}", but its login is dead — run /login anthropic then /claude-pool-add ${target.label}.`
+					: `Claude account → "${target.label}". Next request uses it.`,
+				account?.dead ? "warning" : "info",
+			);
+		},
+	});
+
+	register("claude-pool-status", {
+		description: "Show Claude pool accounts with 5h / weekly quota",
+		handler: async (_args, ctx) => {
+			await refreshVisibleUsage(false);
+			const store = readStore();
+			ctx.ui.notify(
+				`Claude pool (enabled=${store.enabled !== false}, active=${activeAccount()?.label ?? "none"}):\n${poolTable(store.accounts, pickActive(store), readUsage())}`,
+				"info",
+			);
+		},
+	});
+
+	register("claude-pool-add", {
+		description:
+			"Snapshot the current '/login anthropic' account into the pool. Usage: /claude-pool-add <label>",
+		handler: async (args, ctx) => {
+			const label = args.trim() || `account-${Date.now()}`;
+			const creds = readAnthropicAuth();
+			if (!creds) {
+				ctx.ui.notify(
+					"No anthropic OAuth creds in auth.json — run /login anthropic first.",
+					"warning",
+				);
+				return;
+			}
+			const count = await upsertAccount(label, creds);
+			ctx.ui.notify(
+				`Added "${label}" to the Claude pool (${count} account${count === 1 ? "" : "s"}).`,
+				"info",
+			);
+		},
+	});
+
+	register("claude-pool-remove", {
+		description: "Remove an account from the pool. Usage: /claude-pool-remove <n|label>",
+		handler: async (args, ctx) => {
+			const target = resolveAccount(readStore().accounts, args);
+			if (!target) {
+				ctx.ui.notify("Usage: /claude-pool-remove <n|label>", "warning");
+				return;
+			}
+			await mutateStore((store) => {
+				store.accounts = store.accounts.filter((a) => a.label !== target.label);
+				if (store.active === target.label) store.active = pickActive(store);
+			});
+			invalidateSnapshot();
+			ctx.ui.notify(`Removed "${target.label}" from the pool.`, "info");
+		},
+	});
+
+	register("claude-pool-disable", {
+		description:
+			"Hold an account out of rotation (toggle). Usage: /claude-pool-disable <n|label>",
+		handler: async (args, ctx) => {
+			const target = resolveAccount(readStore().accounts, args);
+			if (!target) {
+				ctx.ui.notify("Usage: /claude-pool-disable <n|label>", "warning");
+				return;
+			}
+			const next = await toggleDisabled(target.label);
+			ctx.ui.notify(`"${target.label}" is now ${next ? "disabled" : "enabled"}.`, "info");
+		},
+	});
+}
+
+export async function toggleDisabled(label: string): Promise<boolean> {
+	const next = await mutateStore((store) => {
+		const account = store.accounts.find((a) => a.label === label);
+		if (!account) return false;
+		account.disabled = !account.disabled;
+		if (account.disabled && store.active === label) store.active = pickActive(store);
+		return !!account.disabled;
+	});
+	invalidateSnapshot();
+	return next;
+}
+
+/** Upsert by label, preserving the rest of the store (never a blind rewrite). */
+export async function upsertAccount(
+	label: string,
+	creds: { refresh: string; access: string; expires: number },
+): Promise<number> {
+	const count = await mutateStore((store) => {
+		const entry: Account = {
+			label,
+			...creds,
+			lastGrantAt: Date.now(),
+			dead: false,
+			strikes: 0,
+			cooldownUntil: 0,
+		};
+		const index = store.accounts.findIndex((a) => a.label === label);
+		if (index >= 0) store.accounts[index] = { ...store.accounts[index], ...entry };
+		else store.accounts.push(entry);
+		if (!store.active) store.active = label;
+		return store.accounts.length;
+	});
+	invalidateSnapshot();
+	return count;
+}
