@@ -31,7 +31,7 @@ import {
 } from "../pool.ts";
 import { collectUsage, readUsage } from "../usage.ts";
 import { accountState, poolTable, relative, resolveAccount } from "../format.ts";
-import { toggleDisabled, upsertAccount } from "../commands.ts";
+import { attachCurrentLogin, toggleDisabled } from "../commands.ts";
 
 const args = process.argv.slice(2);
 const command = (args[0] ?? "list").replace(/^--?/, "");
@@ -117,7 +117,6 @@ switch (command) {
 	}
 
 	case "add": {
-		if (!target) die("usage: cpool add <label>");
 		const path = join(AGENT_DIR, "auth.json");
 		if (!existsSync(path)) die(`no ${path} — run '/login anthropic' in pi first`);
 		let auth: { refresh?: string; access?: string; expires?: number } | undefined;
@@ -132,12 +131,18 @@ switch (command) {
 		}
 		if (!auth?.refresh || !auth?.access)
 			die("auth.json has no anthropic OAuth credential — run '/login anthropic'");
-		const count = await upsertAccount(target, {
-			refresh: auth.refresh,
-			access: auth.access,
-			expires: auth.expires ?? 0,
-		});
-		console.log(`added "${target}" (${count} accounts)`);
+		// Label optional: the account is identified via /api/oauth/profile, so a
+		// re-login lands back on its own entry instead of creating a duplicate.
+		const attached = await attachCurrentLogin(target || undefined);
+		if (!attached) {
+			console.log("this login is already attached to a pool account");
+			break;
+		}
+		console.log(
+			`${attached.matched === "new" ? "added" : "re-attached"} "${attached.label}"${
+				attached.email ? ` (${attached.email})` : ""
+			} — ${readStore().accounts.length} accounts`,
+		);
 		break;
 	}
 

@@ -335,6 +335,37 @@ export class UsageHttpError extends Error {
 	}
 }
 
+/** Who a credential belongs to — used to attach a fresh login to the right
+ * pooled account instead of asking the user to remember which one they just
+ * signed into. */
+export interface Profile {
+	uuid?: string;
+	email?: string;
+	org?: string;
+	plan?: string;
+}
+
+export async function fetchProfile(access: string): Promise<Profile> {
+	const response = await fetch("https://api.anthropic.com/api/oauth/profile", {
+		headers: {
+			Authorization: `Bearer ${access}`,
+			"anthropic-beta": "oauth-2025-04-20",
+		},
+		signal: AbortSignal.timeout(10_000),
+	});
+	if (!response.ok) throw new UsageHttpError(response.status);
+	const data = (await response.json()) as {
+		account?: { uuid?: string; email?: string; has_claude_max?: boolean; has_claude_pro?: boolean };
+		organization?: { name?: string };
+	};
+	return {
+		uuid: data.account?.uuid,
+		email: data.account?.email,
+		org: data.organization?.name,
+		plan: data.account?.has_claude_max ? "max" : data.account?.has_claude_pro ? "pro" : undefined,
+	};
+}
+
 export async function fetchUsage(access: string): Promise<UsageSnapshot> {
 	const response = await fetch("https://api.anthropic.com/api/oauth/usage", {
 		headers: {

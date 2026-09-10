@@ -13,6 +13,7 @@ import {
 } from "./pool.ts";
 import { accountLine, poolTable, resolveAccount } from "./format.ts";
 import { collectUsage, readUsage } from "./usage.ts";
+import { fetchProfile } from "./oauth.ts";
 
 interface Ui {
 	notify: (m: string, level?: string) => void;
@@ -45,6 +46,47 @@ function readAnthropicAuth():
 	} catch {
 		return undefined;
 	}
+}
+
+/**
+ * Attach the credential `/login anthropic` just wrote to a pool entry.
+ *
+ * Anthropic REVOKES an account's previous refresh lineage when you log into it
+ * again, so every login silently kills the pooled copy of that same account —
+ * which is exactly how three accounts here ended up `invalid_grant`/dead. We
+ * ask /api/oauth/profile who the new credential belongs to and overwrite that
+ * account's entry by identity, so a login repairs the pool instead of breaking
+ * it. Falls back to the caller's label when the profile call fails.
+ */
+export async function attachCurrentLogin(
+	labelHint?: string,
+): Promise<{ label: string; matched: "identity" | "label" | "new"; email?: string } | undefined> {
+	const creds = readAnthropicAuth();
+	if (!creds) return undefined;
+	const store = readStore();
+	if (store.accounts.some((a) => a.refresh === creds.refresh) && !labelHint)
+		return undefined; // already attached, nothing to repair
+
+	let profile: { uuid?: string; email?: string } = {};
+	try {
+		profile = await fetchProfile(creds.access);
+	} catch {
+		/* identity is a nicety: fall back to the label below */
+	}
+	const byIdentity = store.accounts.find(
+		(a) =>
+			(profile.uuid && a.uuid === profile.uuid) ||
+			(profile.email && a.email === profile.email),
+	);
+	const byLabel = labelHint ? resolveAccount(store.accounts, labelHint) : undefined;
+	const target = byIdentity ?? byLabel;
+	const label = target?.label ?? labelHint ?? profile.email ?? `account-${Date.now()}`;
+	await upsertAccount(label, { ...creds, uuid: profile.uuid, email: profile.email });
+	return {
+		label,
+		matched: byIdentity ? "identity" : target ? "label" : "new",
+		email: profile.email,
+	};
 }
 
 /** Top up the usage cache for the accounts shown in an interactive list. */
@@ -87,8 +129,7 @@ export function setupCommands(pi: ExtensionAPI): void {
 					return;
 				}
 				await setActive(target.label);
-				await ensureFresh(target.label);
-				ctx.ui.notify(`Claude account → "${target.label}".`, "info");
+				ctx.ui.notify(await switchReport(target.label), target.dead ? "warning" : "info");
 				return;
 			}
 
@@ -138,13 +179,7 @@ export function setupCommands(pi: ExtensionAPI): void {
 			const target = fresh.accounts[index];
 			if (!target) return;
 			await setActive(target.label);
-			const account = await ensureFresh(target.label);
-			ctx.ui.notify(
-				account?.dead
-					? `Switched to "${target.label}", but its login is dead — run /login anthropic then /claude-pool-add ${target.label}.`
-					: `Claude account → "${target.label}". Next request uses it.`,
-				account?.dead ? "warning" : "info",
-			);
+			ctx.ui.notify(await switchReport(target.label), target.dead ? "warning" : "info");
 		},
 	});
 
@@ -162,20 +197,25 @@ export function setupCommands(pi: ExtensionAPI): void {
 
 	register("claude-pool-add", {
 		description:
-			"Snapshot the current '/login anthropic' account into the pool. Usage: /claude-pool-add <label>",
+			"Attach the current '/login anthropic' account to the pool (label optional — the account is identified automatically)",
 		handler: async (args, ctx) => {
-			const label = args.trim() || `account-${Date.now()}`;
-			const creds = readAnthropicAuth();
-			if (!creds) {
+			if (!readAnthropicAuth()) {
 				ctx.ui.notify(
 					"No anthropic OAuth creds in auth.json — run /login anthropic first.",
 					"warning",
 				);
 				return;
 			}
-			const count = await upsertAccount(label, creds);
+			const attached = await attachCurrentLogin(args.trim() || undefined);
+			if (!attached) {
+				ctx.ui.notify("This login is already attached to a pool account.", "info");
+				return;
+			}
+			const count = readStore().accounts.length;
 			ctx.ui.notify(
-				`Added "${label}" to the Claude pool (${count} account${count === 1 ? "" : "s"}).`,
+				`${attached.matched === "new" ? "Added" : "Re-attached"} "${attached.label}"${
+					attached.email ? ` (${attached.email})` : ""
+				} — ${count} account${count === 1 ? "" : "s"} in the pool.`,
 				"info",
 			);
 		},
@@ -225,10 +265,33 @@ export async function toggleDisabled(label: string): Promise<boolean> {
 	return next;
 }
 
+/**
+ * What a switch actually did. An explicit pin onto a dead account used to be
+ * silent: `pickActive` skipped it, requests went to some other account, and a
+ * cap error named an account the user never chose. Now we retry the lineage
+ * (dead is our own guess) and, if it stays dead, say who really serves.
+ */
+async function switchReport(label: string): Promise<string> {
+	const account = await ensureFresh(label, { force: true });
+	if (!account?.dead) return `Claude account → "${label}". Next request uses it.`;
+	const serving = pickActive(readStore());
+	return (
+		`"${label}" login is revoked (invalid_grant) — Anthropic kills the stored token when you log into that account again.\n` +
+		`Fix: /login anthropic (choose ${label}) then /claude-pool-add — it re-attaches by account identity.\n` +
+		`Until then requests go to "${serving ?? "nothing usable"}".`
+	);
+}
+
 /** Upsert by label, preserving the rest of the store (never a blind rewrite). */
 export async function upsertAccount(
 	label: string,
-	creds: { refresh: string; access: string; expires: number },
+	creds: {
+		refresh: string;
+		access: string;
+		expires: number;
+		uuid?: string;
+		email?: string;
+	},
 ): Promise<number> {
 	const count = await mutateStore((store) => {
 		const entry: Account = {

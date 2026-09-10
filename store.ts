@@ -50,6 +50,10 @@ export interface Account {
 	dead?: boolean;
 	/** Rate/usage capped until this epoch ms. */
 	cooldownUntil?: number;
+	/** Anthropic account uuid/email, from /api/oauth/profile. Lets a fresh
+	 * `/login anthropic` be re-attached to the right pool entry automatically. */
+	uuid?: string;
+	email?: string;
 	/** Consecutive transient refresh failures (never permanent). */
 	strikes?: number;
 }

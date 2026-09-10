@@ -18,7 +18,7 @@ import { appendFileSync } from "node:fs";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { loginAnthropicOAuth } from "./oauth.ts";
 import { isPlainObject, transformPayload, unaliasToolCalls } from "./tools.ts";
-import { setupCommands } from "./commands.ts";
+import { attachCurrentLogin, setupCommands } from "./commands.ts";
 import {
 	AUTH_RE,
 	LIMIT_RE,
@@ -62,6 +62,16 @@ function setupPool(pi: ExtensionAPI): void {
 	// concurrent sessions can all call it without racing a rotation.
 	const prepare = async () => {
 		invalidateSnapshot();
+		// A fresh `/login anthropic` REVOKES the pooled copy of that same account,
+		// so an unattached credential means one pool entry just died. Re-attach it
+		// by account identity before anything routes around the "dead" entry.
+		try {
+			const attached = await attachCurrentLogin();
+			if (attached)
+				writeDebugLog({ stage: "pool", msg: `attached login → ${attached.label}` });
+		} catch {
+			/* best effort: never block a session on identity lookup */
+		}
 		const label = pickActive(readStore());
 		if (label) await ensureFresh(label);
 	};

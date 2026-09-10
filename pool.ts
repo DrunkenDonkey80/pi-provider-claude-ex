@@ -165,15 +165,21 @@ async function applyRefreshError(
  * Make sure `label` has a usable access token. Returns the current account.
  *
  * `force` is for the 401 path (the server rejected a token we thought was
- * live). Even then, if the consume-gate re-read shows a different generation,
- * someone else already rotated it and we use theirs instead of POSTing.
+ * live) and for explicit user actions. Even then, if the consume-gate re-read
+ * shows a different generation, someone else already rotated it and we use
+ * theirs instead of POSTing.
+ *
+ * `force` also RETRIES a dead account: `dead` is our own classification, and a
+ * revoked-looking lineage is exactly what a user retries after re-logging in.
+ * Only the background sweep skips dead accounts.
  */
 export async function ensureFresh(
 	label: string,
 	opts: { force?: boolean } = {},
 ): Promise<Account | undefined> {
 	const before = findAccount(readStore(), label);
-	if (!before || before.dead) return before;
+	if (!before) return before;
+	if (before.dead && !opts.force) return before;
 	if (!opts.force && before.expires > Date.now() + ACCESS_BUFFER_MS)
 		return before;
 
