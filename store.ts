@@ -50,10 +50,16 @@ export interface Account {
 	dead?: boolean;
 	/** Rate/usage capped until this epoch ms. */
 	cooldownUntil?: number;
-	/** Anthropic account uuid/email, from /api/oauth/profile. Lets a fresh
-	 * `/login anthropic` be re-attached to the right pool entry automatically. */
+	/** Anthropic identity, from /api/oauth/profile. Lets a fresh `/login
+	 * anthropic` be re-attached to the right pool entry automatically.
+	 * The key is (uuid, orgUuid): one email can hold several subscriptions,
+	 * each with its own quota, so email alone would merge two pools. */
 	uuid?: string;
+	orgUuid?: string;
 	email?: string;
+	/** Display only: org name and plan (pro/max/team). */
+	org?: string;
+	plan?: string;
 	/** Consecutive transient refresh failures (never permanent). */
 	strikes?: number;
 }

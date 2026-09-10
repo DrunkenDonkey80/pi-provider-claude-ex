@@ -41,8 +41,16 @@ export function accountLine(
 	isActive: boolean,
 ): string {
 	const state = accountState(account);
+	// Plan/email are shown because one email can hold several subscriptions:
+	// without them two rows for the same person are indistinguishable.
+	const id = [
+		account.email && !account.label.includes(account.email) ? account.email : "",
+		account.plan ? `[${account.plan}]` : "",
+	]
+		.filter(Boolean)
+		.join(" ");
 	const parts = [
-		`${isActive ? "▸" : " "} ${index + 1}. ${account.label}`,
+		`${isActive ? "▸" : " "} ${index + 1}. ${account.label}${id ? ` ${id}` : ""}`,
 		window("5h", entry?.five_hour),
 		window("7d", entry?.seven_day),
 	];

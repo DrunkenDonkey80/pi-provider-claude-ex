@@ -13,7 +13,7 @@ import {
 } from "./pool.ts";
 import { accountLine, poolTable, resolveAccount } from "./format.ts";
 import { collectUsage, readUsage } from "./usage.ts";
-import { fetchProfile } from "./oauth.ts";
+import { type Profile, fetchProfile } from "./oauth.ts";
 
 interface Ui {
 	notify: (m: string, level?: string) => void;
@@ -57,36 +57,94 @@ function readAnthropicAuth():
  * ask /api/oauth/profile who the new credential belongs to and overwrite that
  * account's entry by identity, so a login repairs the pool instead of breaking
  * it. Falls back to the caller's label when the profile call fails.
+ *
+ * Identity is (account uuid, org uuid). One email can hold SEVERAL
+ * subscriptions — a personal Pro org and a team seat share `flex@datecs.bg`
+ * but bill and rate-limit separately — so matching on email merged two
+ * independent quota pools into one entry and silently dropped one login.
  */
 export async function attachCurrentLogin(
 	labelHint?: string,
-): Promise<{ label: string; matched: "identity" | "label" | "new"; email?: string } | undefined> {
+): Promise<
+	| {
+			label: string;
+			matched: "identity" | "label" | "new";
+			email?: string;
+			plan?: string;
+	  }
+	| undefined
+> {
 	const creds = readAnthropicAuth();
 	if (!creds) return undefined;
 	const store = readStore();
-	if (store.accounts.some((a) => a.refresh === creds.refresh) && !labelHint)
-		return undefined; // already attached, nothing to repair
+	const owner = store.accounts.find((a) => a.refresh === creds.refresh);
+	if (owner && !labelHint) return undefined; // already attached, nothing to repair
+	if (owner && labelHint && owner.label !== labelHint) {
+		// RENAME, never duplicate: two entries holding one refresh lineage would
+		// rotate each other's token away and both end up dead.
+		await mutateStore((s) => {
+			const entry = s.accounts.find((a) => a.label === owner.label);
+			if (!entry) return;
+			entry.label = labelHint;
+			if (s.active === owner.label) s.active = labelHint;
+		});
+		invalidateSnapshot();
+		return { label: labelHint, matched: "label", email: owner.email, plan: owner.plan };
+	}
 
-	let profile: { uuid?: string; email?: string } = {};
+	let profile: Profile = {};
 	try {
 		profile = await fetchProfile(creds.access);
 	} catch {
 		/* identity is a nicety: fall back to the label below */
 	}
-	const byIdentity = store.accounts.find(
-		(a) =>
-			(profile.uuid && a.uuid === profile.uuid) ||
-			(profile.email && a.email === profile.email),
-	);
+	// An explicit label WINS over the identity match. Anthropic hands the same
+	// account uuid to every subscription it owns and picks the org server-side,
+	// so identity alone cannot split a Pro org from a team seat: only the user
+	// knows which login they just made. Without a label, identity decides.
 	const byLabel = labelHint ? resolveAccount(store.accounts, labelHint) : undefined;
-	const target = byIdentity ?? byLabel;
-	const label = target?.label ?? labelHint ?? profile.email ?? `account-${Date.now()}`;
-	await upsertAccount(label, { ...creds, uuid: profile.uuid, email: profile.email });
+	const target = byLabel ?? (labelHint ? undefined : findByIdentity(store.accounts, profile));
+	const label = target?.label ?? labelHint ?? defaultLabel(store.accounts, profile);
+	await upsertAccount(label, {
+		...creds,
+		uuid: profile.uuid,
+		orgUuid: profile.orgUuid,
+		email: profile.email,
+		org: profile.org,
+		plan: profile.plan,
+	});
 	return {
 		label,
-		matched: byIdentity ? "identity" : target ? "label" : "new",
+		matched: byLabel ? "label" : target ? "identity" : "new",
 		email: profile.email,
+		plan: profile.plan,
 	};
+}
+
+/**
+ * Exact (account, org) match first. A legacy entry stored before orgUuid
+ * existed matches on account alone, but only when no entry already claims this
+ * org — otherwise a second subscription would overwrite the first.
+ */
+export function findByIdentity(accounts: Account[], profile: Profile): Account | undefined {
+	if (!profile.uuid) return undefined;
+	const sameAccount = accounts.filter((a) => a.uuid === profile.uuid);
+	if (!profile.orgUuid) return sameAccount[0];
+	return (
+		sameAccount.find((a) => a.orgUuid === profile.orgUuid) ??
+		sameAccount.find((a) => !a.orgUuid)
+	);
+}
+
+/** `flex@datecs.bg`, or `flex@datecs.bg (team)` when that email is already in
+ * the pool under a different subscription. */
+function defaultLabel(accounts: Account[], profile: Profile): string {
+	const email = profile.email;
+	if (!email) return `account-${Date.now()}`;
+	if (!accounts.some((a) => a.email === email)) return email;
+	const qualified = `${email} (${profile.plan ?? profile.org ?? "alt"})`;
+	if (!accounts.some((a) => a.label === qualified)) return qualified;
+	return `${qualified.slice(0, -1)} ${(profile.orgUuid ?? "").slice(0, 6)})`;
 }
 
 /** Top up the usage cache for the accounts shown in an interactive list. */
@@ -214,7 +272,7 @@ export function setupCommands(pi: ExtensionAPI): void {
 			const count = readStore().accounts.length;
 			ctx.ui.notify(
 				`${attached.matched === "new" ? "Added" : "Re-attached"} "${attached.label}"${
-					attached.email ? ` (${attached.email})` : ""
+					attached.plan ? ` [${attached.plan}]` : ""
 				} — ${count} account${count === 1 ? "" : "s"} in the pool.`,
 				"info",
 			);
@@ -290,7 +348,10 @@ export async function upsertAccount(
 		access: string;
 		expires: number;
 		uuid?: string;
+		orgUuid?: string;
 		email?: string;
+		org?: string;
+		plan?: string;
 	},
 ): Promise<number> {
 	const count = await mutateStore((store) => {

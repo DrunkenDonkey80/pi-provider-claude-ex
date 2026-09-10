@@ -335,13 +335,22 @@ export class UsageHttpError extends Error {
 	}
 }
 
-/** Who a credential belongs to — used to attach a fresh login to the right
+/**
+ * Who a credential belongs to — used to attach a fresh login to the right
  * pooled account instead of asking the user to remember which one they just
- * signed into. */
+ * signed into.
+ *
+ * Identity is (account uuid, ORG uuid), never the email: one email can hold
+ * several subscriptions (e.g. a personal Pro org plus a team seat), each with
+ * its OWN quota. Keying on email would merge two independent quota pools into
+ * one entry and lose whichever was attached second.
+ */
 export interface Profile {
 	uuid?: string;
+	orgUuid?: string;
 	email?: string;
 	org?: string;
+	/** pro | max | team | … — from the org, which is what actually bills. */
 	plan?: string;
 }
 
@@ -356,13 +365,21 @@ export async function fetchProfile(access: string): Promise<Profile> {
 	if (!response.ok) throw new UsageHttpError(response.status);
 	const data = (await response.json()) as {
 		account?: { uuid?: string; email?: string; has_claude_max?: boolean; has_claude_pro?: boolean };
-		organization?: { name?: string };
+		organization?: { uuid?: string; name?: string; organization_type?: string; seat_tier?: string };
 	};
+	const org = data.organization;
+	// organization_type is the reliable per-subscription discriminator
+	// (claude_pro / claude_max / claude_team); the account-level has_claude_*
+	// flags describe the person, not the subscription this token bills to.
+	const plan =
+		org?.organization_type?.replace(/^claude_/, "") ??
+		(data.account?.has_claude_max ? "max" : data.account?.has_claude_pro ? "pro" : undefined);
 	return {
 		uuid: data.account?.uuid,
+		orgUuid: org?.uuid,
 		email: data.account?.email,
-		org: data.organization?.name,
-		plan: data.account?.has_claude_max ? "max" : data.account?.has_claude_pro ? "pro" : undefined,
+		org: org?.name,
+		plan,
 	};
 }
 

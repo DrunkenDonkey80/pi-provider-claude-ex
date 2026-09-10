@@ -230,6 +230,30 @@ await check("resolveAccount takes index, exact label and unique substring", () =
 	assert.equal(format.resolveAccount(accounts, "9"), undefined);
 });
 
+// 7b. One email, several subscriptions: a personal Pro org and a team seat
+//     share an email but bill and rate-limit separately. Matching on email
+//     merged them into one entry and silently dropped a login.
+await check("findByIdentity keys on (account, org), not email", async () => {
+	const { findByIdentity } = await import("./commands.ts");
+	const pro = { ...acct("me (pro)"), uuid: "u1", orgUuid: "o-pro", email: "me@x.com" };
+	const team = { ...acct("me (team)"), uuid: "u1", orgUuid: "o-team", email: "me@x.com" };
+	const accounts = [pro, team] as never;
+	assert.equal(
+		findByIdentity(accounts, { uuid: "u1", orgUuid: "o-team", email: "me@x.com" })?.label,
+		"me (team)",
+	);
+	// a third subscription on the same email must NOT hijack either entry
+	assert.equal(
+		findByIdentity(accounts, { uuid: "u1", orgUuid: "o-max", email: "me@x.com" }),
+		undefined,
+	);
+	// same email, different person → no match at all
+	assert.equal(findByIdentity(accounts, { uuid: "u2", email: "me@x.com" }), undefined);
+	// legacy entry with no stored org adopts the login once, then is pinned
+	const legacy = [{ ...acct("old"), uuid: "u1" }] as never;
+	assert.equal(findByIdentity(legacy, { uuid: "u1", orgUuid: "o-pro" })?.label, "old");
+});
+
 await check("accountLine shows state and quota", () => {
 	const line = format.accountLine(
 		acct("x", { cooldownUntil: Date.now() + 600_000, refreshExpires: Date.parse("2026-11-04") }),
