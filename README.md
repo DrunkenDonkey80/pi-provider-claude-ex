@@ -51,6 +51,36 @@ generation — which is what actually keeps a login alive.
 /claude-pool-import [path|json]  load them on another machine
 ```
 
+### Which account gets picked
+
+Stay pinned while the current account works. When it doesn't, score every
+candidate on **quota left minus time left to spend it**, per window:
+
+```text
+slack_w = (1 - pct/100) - time_until_reset / window_length
+score   = slack_7d + 2 * slack_5h
+```
+
+Positive slack means use-it-or-lose-it; negative means ahead of budget, save it.
+So a 5h window resetting in 15 minutes with half unspent wins, while "70% of the
+week gone with 3 days left" is held back. Weights come from `pick-sim.py`
+(4 simulated weeks x 12 seeds: ~10% less wasted weekly quota than picking on
+remaining quota alone). They sit on a plateau, not a peak — re-run the sim
+before tuning.
+
+Stale numbers are the real hazard — another machine or pi session can drain an
+account between our reads — so the pool:
+
+* **re-reads every candidate before switching** (`pickNext`), never on the
+  hot path: if the pinned account still works, the switch costs zero requests;
+* **parks anything that comes back full** until its stated reset, so all
+  sessions skip it instead of each discovering the wall themselves;
+* **asks the server on a cap hit** — a forced usage read after a 429 gives the
+  real reset time rather than a 5-minute guess, and an account that reads full
+  with no stated reset is parked for an hour;
+* **falls back to cached numbers** if a read fails, and skips lineages that
+  fail to refresh (dead) entirely.
+
 In the `/claude-pool` list, keys act on the hovered row: `enter` switch,
 `r` refresh usage, `d` enable/disable, `-` remove, `esc` close. Refresh, toggle
 and remove re-present the updated list instead of closing it.
@@ -157,8 +187,7 @@ node test.ts     # 15 asserts: locking, stash adoption, selection, backoff, pars
 
 macOS Keychain storage, parallel per-terminal sessions (`cswap run`), the Textual
 TUI, the menu bar, and the `consume-first` weekly-quota strategy. The switching
-strategy here is: stay pinned while usable, else the account with the most known
-quota left.
+strategy here is the slack score below.
 
 MIT. Credit: `@zgltyq/pi-provider-claude`, `@benvargas/pi-claude-code-use`,
 and `realiti4/claude-swap` for the liveness and cadence model.

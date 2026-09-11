@@ -11,13 +11,13 @@
  * repainting a list costs zero requests.
  */
 
+import { USAGE_PATH, readJson, withLock, writeJsonAtomic } from "./store.ts";
 import {
-	USAGE_PATH,
-	readJson,
-	withLock,
-	writeJsonAtomic,
-} from "./store.ts";
-import { UsageHttpError, fetchUsage, type UsageSnapshot } from "./oauth.ts";
+	UsageHttpError,
+	fetchUsage,
+	type UsageSnapshot,
+	type UsageWindow,
+} from "./oauth.ts";
 
 export const SERVE_TTL_MS = 180_000;
 const MIN_INTERVAL_MS = 180_000;
@@ -51,13 +51,72 @@ async function patchUsage(label: string, patch: UsageEntry): Promise<void> {
 	}
 }
 
-/** Remaining quota headroom (0-100) from the tightest known window. */
-export function headroom(entry: UsageEntry | undefined): number | undefined {
-	const pcts = [entry?.five_hour?.pct, entry?.seven_day?.pct].filter(
-		(p): p is number => typeof p === "number",
-	);
-	if (!pcts.length) return undefined;
-	return 100 - Math.max(...pcts);
+const W5_MS = 5 * 3_600_000;
+const W7_MS = 7 * 24 * 3_600_000;
+/** A window at or above this counts as spent (the server rounds percentages). */
+const FULL_PCT = 99;
+/** How long to park an account that reads full but states no reset time. */
+const APPEARS_FULL_MS = 3_600_000;
+
+/** Time left in a window; a whole window when the server states no reset. */
+function resetsIn(
+	w: UsageWindow | undefined,
+	windowMs: number,
+	now: number,
+): number {
+	const at = w?.resets_at ? Date.parse(w.resets_at) : Number.NaN;
+	return Number.isFinite(at)
+		? Math.max(0, Math.min(windowMs, at - now))
+		: windowMs;
+}
+
+/**
+ * How badly an account wants to be used: per window, the quota left minus the
+ * time left to spend it, both as fractions — so the 5h and 7d windows compare
+ * directly with no unit juggling.
+ *
+ *   > 0  more quota than time → use it or lose it
+ *   < 0  ahead of budget → save it for later in the window
+ *
+ * So a 5h window about to reset with quota unspent wins, while "70% of the week
+ * gone with 3 days left" (0.30 left vs 0.43 of the week) scores negative and
+ * gets held back. Weights tuned in pick-sim.py (7d:5h = 1:2 — a plateau across
+ * 0.5-1.5, not a peak, so don't over-tune). An unknown account scores 0:
+ * neutral, behind any account with a proven surplus.
+ */
+export function switchScore(
+	entry: UsageEntry | undefined,
+	now = Date.now(),
+): number {
+	const slack = (w: UsageWindow | undefined, windowMs: number): number =>
+		typeof w?.pct === "number"
+			? 1 - w.pct / 100 - resetsIn(w, windowMs, now) / windowMs
+			: 0;
+	return slack(entry?.seven_day, W7_MS) + 2 * slack(entry?.five_hour, W5_MS);
+}
+
+/**
+ * When a full-looking account frees up again, or undefined if it has room.
+ * Lets a fresh read park an account BEFORE we switch into a 429 — the usual
+ * cause being another machine draining it since our last read.
+ */
+export function fullUntil(
+	entry: UsageEntry | undefined,
+	now = Date.now(),
+): number | undefined {
+	const windows = [
+		[entry?.five_hour, W5_MS],
+		[entry?.seven_day, W7_MS],
+	] as const;
+	for (const [w, windowMs] of windows) {
+		if (typeof w?.pct !== "number" || w.pct < FULL_PCT) continue;
+		const at = w.resets_at ? Date.parse(w.resets_at) : Number.NaN;
+		// No stated reset: park it for an hour rather than retry into the wall.
+		return Number.isFinite(at)
+			? Math.min(at, now + windowMs)
+			: now + APPEARS_FULL_MS;
+	}
+	return undefined;
 }
 
 /**
@@ -111,7 +170,9 @@ export async function collectUsage(
 			// A lapsed 429 often re-blocks right at its deadline: wait past it.
 			const backoff = backoffFrom(
 				label,
-				e instanceof UsageHttpError && e.status === 429 && e.retryAfterS !== undefined
+				e instanceof UsageHttpError &&
+					e.status === 429 &&
+					e.retryAfterS !== undefined
 					? e.retryAfterS * 1000 + RETRY_AFTER_MARGIN_MS
 					: undefined,
 			);

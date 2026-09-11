@@ -30,6 +30,7 @@ import {
 	invalidateSnapshot,
 	markRateLimited,
 	pickActive,
+	pickNext,
 	poolEnabled,
 	setPoolLogger,
 	snapshot,
@@ -97,7 +98,9 @@ function setupPool(pi: ExtensionAPI): void {
 		} catch {
 			/* best effort: never block a session on identity lookup */
 		}
-		const label = pickActive(readStore());
+		// Free when the pinned account still works; re-reads quota only when a
+		// switch is actually pending.
+		const label = await pickNext();
 		if (label) await ensureFresh(label);
 	};
 	pi.on("session_start", prepare);

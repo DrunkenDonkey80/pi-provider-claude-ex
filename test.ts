@@ -231,12 +231,52 @@ await check(
 	},
 );
 
-await check("headroom uses the tightest window", () => {
-	assert.equal(
-		usage.headroom({ five_hour: { pct: 90 }, seven_day: { pct: 10 } }),
-		10,
+await check("switchScore prefers quota that is about to expire", () => {
+	const now = Date.now();
+	const iso = (ms: number) => new Date(now + ms).toISOString();
+	const score = (e: unknown) => usage.switchScore(e as never, now);
+
+	// Half a 5h window unspent with 15 minutes to go: use it or lose it.
+	const expiring = score({
+		five_hour: { pct: 50, resets_at: iso(15 * 60_000) },
+	});
+	assert.ok(expiring > 0.5, `expiring 5h should score high, got ${expiring}`);
+
+	// 70% of the week spent with 3 days left = behind budget, hold it back.
+	const behind = score({
+		seven_day: { pct: 70, resets_at: iso(3 * 24 * 3_600_000) },
+	});
+	assert.ok(
+		behind < 0,
+		`week behind budget should score negative, got ${behind}`,
 	);
-	assert.equal(usage.headroom(undefined), undefined);
+
+	// Weekly nearly over with quota unspent: spend it before it evaporates.
+	const weekEnding = score({
+		seven_day: { pct: 40, resets_at: iso(2 * 3_600_000) },
+	});
+	assert.ok(weekEnding > 0.5, `week about to reset should score high`);
+	assert.ok(weekEnding > behind, "unspent-and-expiring beats behind-budget");
+
+	// Unknown accounts are neutral, not best and not worst.
+	assert.equal(score(undefined), 0);
+	assert.ok(score(undefined) > behind && expiring > score(undefined));
+});
+
+await check("fullUntil parks an account that reads full", () => {
+	const now = Date.now();
+	const resets = new Date(now + 90 * 60_000).toISOString();
+	assert.equal(
+		usage.fullUntil({ five_hour: { pct: 100, resets_at: resets } }, now),
+		Date.parse(resets),
+	);
+	// Full but silent about the reset: park for an hour, never retry instantly.
+	assert.equal(
+		usage.fullUntil({ seven_day: { pct: 99 } }, now),
+		now + 3_600_000,
+	);
+	assert.equal(usage.fullUntil({ five_hour: { pct: 80 } }, now), undefined);
+	assert.equal(usage.fullUntil(undefined, now), undefined);
 });
 
 // 6. Cap-message parsing: a wrong reset epoch either wastes an account or

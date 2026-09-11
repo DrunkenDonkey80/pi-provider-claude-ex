@@ -30,7 +30,13 @@ import {
 	writeJsonAtomic,
 } from "./store.ts";
 import { type RefreshError, refreshGrant } from "./oauth.ts";
-import { collectUsage, headroom, readUsage } from "./usage.ts";
+import {
+	SERVE_TTL_MS,
+	collectUsage,
+	fullUntil,
+	readUsage,
+	switchScore,
+} from "./usage.ts";
 import { join } from "node:path";
 
 /** Refresh the access token this long before it expires. */
@@ -82,8 +88,11 @@ export const usable = (a: Account, now = Date.now()): boolean =>
 
 /**
  * Sticky selection: stay on the pinned account while it is usable, otherwise
- * take the one with the most known quota left (falling back to pool order),
- * otherwise the one whose cooldown frees up soonest.
+ * the best switch score (quota left vs time left to spend it), otherwise the
+ * one whose cooldown frees up soonest.
+ *
+ * Sync and hot (getApiKey), so it scores whatever the cache already holds.
+ * `pickNext()` is the one that re-reads first — use it when the choice matters.
  */
 export function pickActive(store: Store): string | undefined {
 	const now = Date.now();
@@ -94,9 +103,9 @@ export function pickActive(store: Store): string | undefined {
 	const candidates = store.accounts.filter((a) => usable(a, now));
 	if (candidates.length) {
 		let best = candidates[0];
-		let bestScore = headroom(cache[best.label]) ?? -1;
+		let bestScore = switchScore(cache[best.label], now);
 		for (const a of candidates.slice(1)) {
-			const score = headroom(cache[a.label]) ?? -1;
+			const score = switchScore(cache[a.label], now);
 			if (score > bestScore) {
 				best = a;
 				bestScore = score;
@@ -235,19 +244,89 @@ export async function ensureFresh(
 
 // ─── caps / cooldown ────────────────────────────────────────────────────────
 
+/** A valid access token for a label, or undefined if the lineage is dead. */
+const tokenFor = async (label: string): Promise<string | undefined> => {
+	const account = await ensureFresh(label);
+	return account?.dead ? undefined : account?.access;
+};
+
+/**
+ * Park every candidate whose FRESH read says a window is spent, until it
+ * resets. Only a fresh read may park an account — stale numbers are the exact
+ * thing this defends against.
+ */
+async function parkFull(labels: string[]): Promise<void> {
+	const cache = readUsage();
+	const now = Date.now();
+	const until = new Map<string, number>();
+	for (const label of labels) {
+		const entry = cache[label];
+		if (!entry || now - (entry.at ?? 0) > SERVE_TTL_MS) continue;
+		const free = fullUntil(entry, now);
+		if (free) until.set(label, free);
+	}
+	if (!until.size) return;
+	await mutateStore((store) => {
+		for (const [label, free] of until) {
+			const account = findAccount(store, label);
+			if (account)
+				account.cooldownUntil = Math.max(account.cooldownUntil ?? 0, free);
+		}
+	});
+	invalidateSnapshot();
+	log(`parked (read full): ${[...until.keys()].join(", ")}`);
+}
+
+/**
+ * Pick with fresh numbers. Our cache can be minutes old and another machine or
+ * pi session may have drained an account since — switching on that stale
+ * optimism means eating a 429 on the very next message. So re-read every
+ * candidate, park the ones that come back full, then score.
+ *
+ * Costs one usage request per candidate, but only on an actual switch (a few
+ * times a day), and every read is still behind collectUsage's 180s floor and
+ * 429 backoff.
+ */
+export async function pickNext(): Promise<string | undefined> {
+	const store = readStore();
+	// No switch pending: the pinned account still works, so spend nothing.
+	const pinned = store.active ? findAccount(store, store.active) : undefined;
+	if (pinned && usable(pinned)) return pinned.label;
+
+	const labels = store.accounts.filter((a) => usable(a)).map((a) => a.label);
+	if (labels.length > 1) {
+		try {
+			await collectUsage(labels, tokenFor, { max: labels.length });
+			await parkFull(labels);
+		} catch {
+			/* a failed read must never block the switch — fall back to cache */
+		}
+	}
+	return pickActive(readStore());
+}
+
 export async function markRateLimited(
 	label: string,
 	until: number,
 ): Promise<string | undefined> {
-	const next = await mutateStore((store) => {
+	// The server just refused us: a forced read tells us when this account
+	// actually frees up, instead of trusting the error text (which often says
+	// nothing, and a 5-minute guess is what makes the pool flap).
+	let parked = until;
+	try {
+		await collectUsage([label], tokenFor, { max: 1, force: true });
+		parked = Math.max(until, fullUntil(readUsage()[label]) ?? 0);
+	} catch {
+		/* keep the caller's estimate */
+	}
+	await mutateStore((store) => {
 		const account = findAccount(store, label);
-		if (account) account.cooldownUntil = until;
-		const pick = pickActive(store);
-		if (pick) store.active = pick;
-		return pick;
+		if (account) account.cooldownUntil = parked;
 	});
 	invalidateSnapshot();
-	log(`rate-limited ${label} until ${new Date(until).toISOString()} → ${next}`);
+	const next = await pickNext();
+	if (next) await setActive(next);
+	log(`rate-limited ${label} until ${new Date(parked).toISOString()} → ${next}`);
 	return next;
 }
 
@@ -300,16 +379,12 @@ export async function tick(opts: { usage?: boolean } = {}): Promise<void> {
 		}
 	}
 	if (opts.usage === false) return;
-	const getToken = async (label: string) => {
-		const account = await ensureFresh(label);
-		return account?.dead ? undefined : account?.access;
-	};
 	// Only the account in use is polled in the background (every ACTIVE_USAGE_MS,
 	// still behind its own 429 backoff). The others are read on demand — `r` in
 	// /claude-pool, `cpool list --refresh`.
 	const active = pickActive(store);
 	if (active && now - (readUsage()[active]?.at ?? 0) >= ACTIVE_USAGE_MS)
-		await collectUsage([active], getToken, { max: 1 });
+		await collectUsage([active], tokenFor, { max: 1 });
 }
 
 /** Long-running single-writer sweep loop (`cpool daemon`). */
