@@ -36,6 +36,31 @@ import {
 	tick,
 } from "./pool.ts";
 import { readStore } from "./store.ts";
+import { readUsage, type UsageEntry } from "./usage.ts";
+
+/**
+ * 5h / 7d quota for the pooled account in use (or `label`), read from the
+ * shared on-disk cache — no network, safe to call as often as you like.
+ * The pool refreshes the active account every 5 minutes.
+ *
+ *   const { quota } = await import("pi-provider-claude-plus/index.ts");
+ *   quota()?.five_hour?.pct // 34
+ */
+export function quota(
+	label?: string,
+):
+	| ({ label: string } & Pick<UsageEntry, "at" | "five_hour" | "seven_day">)
+	| undefined {
+	const l = label ?? pickActive(readStore());
+	const entry = l ? readUsage()[l] : undefined;
+	if (!l || !entry) return undefined;
+	return {
+		label: l,
+		at: entry.at,
+		five_hour: entry.five_hour,
+		seven_day: entry.seven_day,
+	};
+}
 
 const debugLogPath = process.env.PI_CLAUDE_PROVIDER_DEBUG_LOG;
 function writeDebugLog(payload: unknown): void {

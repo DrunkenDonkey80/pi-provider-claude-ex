@@ -354,6 +354,18 @@ await check("accountLine shows state and quota", () => {
 	assert.match(line, /login exp 2026-11-04/);
 });
 
+// 7b. The public quota() accessor other extensions call.
+await check("quota exposes the active account's windows", async () => {
+	seed([acct("a")]);
+	store.writeJsonAtomic(store.USAGE_PATH, {
+		a: { at: Date.now(), five_hour: { pct: 12 }, seven_day: { pct: 34 } },
+	});
+	const { quota } = await import("./index.ts");
+	assert.equal(quota()?.five_hour?.pct, 12);
+	assert.equal(quota("a")?.seven_day?.pct, 34);
+	assert.equal(quota("missing"), undefined);
+});
+
 // 8. The store must never be written world-readable (it holds refresh tokens).
 await check("store file is written 0600", () => {
 	seed([acct("a")]);

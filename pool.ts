@@ -41,6 +41,8 @@ export const KEEPALIVE_MS = 20 * 24 * 3_600_000;
 const DEFAULT_COOLDOWN_MS = 5 * 60_000;
 /** Background sweep cadence (daemon, or a session with no daemon running). */
 export const TICK_MS = 5 * 60_000;
+/** Only the in-use account polls in the background; the rest refresh on demand. */
+export const ACTIVE_USAGE_MS = 5 * 60_000;
 const DAEMON_HEARTBEAT_MS = 30_000;
 const DAEMON_STALE_MS = 90_000;
 /** getApiKey() is synchronous and hot: memoize the on-disk store briefly. */
@@ -291,18 +293,23 @@ export async function tick(opts: { usage?: boolean } = {}): Promise<void> {
 		const nearExpiry = account.expires <= now + ACCESS_BUFFER_MS;
 		if (nearExpiry) await ensureFresh(account.label);
 		else if (idle > KEEPALIVE_MS) {
-			log(`keep-alive grant for ${account.label} (idle ${Math.round(idle / 86_400_000)}d)`);
+			log(
+				`keep-alive grant for ${account.label} (idle ${Math.round(idle / 86_400_000)}d)`,
+			);
 			await ensureFresh(account.label, { force: true });
 		}
 	}
 	if (opts.usage === false) return;
-	const labels = readStore()
-		.accounts.filter((a) => !a.dead)
-		.map((a) => a.label);
-	await collectUsage(labels, async (label) => {
+	const getToken = async (label: string) => {
 		const account = await ensureFresh(label);
 		return account?.dead ? undefined : account?.access;
-	});
+	};
+	// Only the account in use is polled in the background (every ACTIVE_USAGE_MS,
+	// still behind its own 429 backoff). The others are read on demand — `r` in
+	// /claude-pool, `cpool list --refresh`.
+	const active = pickActive(store);
+	if (active && now - (readUsage()[active]?.at ?? 0) >= ACTIVE_USAGE_MS)
+		await collectUsage([active], getToken, { max: 1 });
 }
 
 /** Long-running single-writer sweep loop (`cpool daemon`). */

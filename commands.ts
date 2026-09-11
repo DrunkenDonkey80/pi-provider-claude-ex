@@ -222,10 +222,6 @@ export function setupCommands(pi: ExtensionAPI): void {
 				return;
 			}
 
-			await refreshVisibleUsage(false);
-			const fresh = readStore();
-			const cache = readUsage();
-			const active = pickActive(fresh);
 			if (!ctx.ui.custom) {
 				ctx.ui.notify(
 					"Interactive menu needs a TUI — use /claude-pool <n|label> or cpool.",
@@ -241,92 +237,82 @@ export function setupCommands(pi: ExtensionAPI): void {
 				act: "switch" | "refresh" | "toggle" | "remove";
 				label: string;
 			};
-			const pick = await ctx.ui.custom<MenuAction | null>(
-				(tui, theme, _kb, done) => {
-					const list = new SelectList(
-						fresh.accounts.map((a, i) => ({
-							value: a.label,
-							label: accountLine(a, i, cache[a.label], a.label === active),
-						})),
-						Math.min(fresh.accounts.length, 12),
-						{
-							selectedPrefix: (t: string) => theme.fg("accent", t),
-							selectedText: (t: string) => theme.fg("accent", t),
-							description: (t: string) => theme.fg("muted", t),
-							scrollInfo: (t: string) => theme.fg("dim", t),
-							noMatch: (t: string) => theme.fg("warning", t),
-						},
-					);
-					list.onSelect = (item: { value: string }) =>
-						done({ act: "switch", label: item.value });
-					list.onCancel = () => done(null);
-					const box = new Container();
-					box.addChild(
-						new Text(theme.fg("accent", theme.bold("Claude accounts")), 1, 0),
-					);
-					box.addChild(list);
-					box.addChild(
-						new Text(
-							theme.fg(
-								"dim",
-								"enter switch • r refresh usage • d enable/disable • - remove • esc close",
+			// The list stays up: refresh / enable-disable / remove re-present it with
+			// current data. Only a switch or esc closes it.
+			for (;;) {
+				const fresh = readStore();
+				if (!fresh.accounts.length) return;
+				const cache = readUsage();
+				const active = pickActive(fresh);
+				const pick = await ctx.ui.custom<MenuAction | null>(
+					(tui, theme, _kb, done) => {
+						const list = new SelectList(
+							fresh.accounts.map((a, i) => ({
+								value: a.label,
+								label: accountLine(a, i, cache[a.label], a.label === active),
+							})),
+							Math.min(fresh.accounts.length, 12),
+							{
+								selectedPrefix: (t: string) => theme.fg("accent", t),
+								selectedText: (t: string) => theme.fg("accent", t),
+								description: (t: string) => theme.fg("muted", t),
+								scrollInfo: (t: string) => theme.fg("dim", t),
+								noMatch: (t: string) => theme.fg("warning", t),
+							},
+						);
+						list.onSelect = (item: { value: string }) =>
+							done({ act: "switch", label: item.value });
+						list.onCancel = () => done(null);
+						const box = new Container();
+						box.addChild(
+							new Text(theme.fg("accent", theme.bold("Claude accounts")), 1, 0),
+						);
+						box.addChild(list);
+						box.addChild(
+							new Text(
+								theme.fg(
+									"dim",
+									"enter switch • r refresh usage • d enable/disable • - remove • esc close",
+								),
+								1,
+								0,
 							),
-							1,
-							0,
-						),
+						);
+						const onKey = (act: MenuAction["act"]) => {
+							const item = list.getSelectedItem();
+							if (item) done({ act, label: item.value });
+						};
+						return {
+							render: (w: number) => box.render(w),
+							invalidate: () => box.invalidate(),
+							handleInput: (data: string) => {
+								if (data === "-") return onKey("remove");
+								if (data === "r") return onKey("refresh");
+								if (data === "d") return onKey("toggle");
+								list.handleInput(data);
+								tui.requestRender();
+							},
+						};
+					},
+				);
+				if (!pick) return; // Esc
+				if (pick.act === "switch") {
+					const target = fresh.accounts.find((a) => a.label === pick.label);
+					await setActive(pick.label);
+					ctx.ui.notify(
+						await switchReport(pick.label),
+						target?.dead ? "warning" : "info",
 					);
-					const onKey = (act: MenuAction["act"]) => {
-						const item = list.getSelectedItem();
-						if (item) done({ act, label: item.value });
-					};
-					return {
-						render: (w: number) => box.render(w),
-						invalidate: () => box.invalidate(),
-						handleInput: (data: string) => {
-							if (data === "-") return onKey("remove");
-							if (data === "r") return onKey("refresh");
-							if (data === "d") return onKey("toggle");
-							list.handleInput(data);
-							tui.requestRender();
-						},
-					};
-				},
-			);
-			if (!pick) return; // Esc
-
-			if (pick.act === "switch") {
-				const target = fresh.accounts.find((a) => a.label === pick.label);
-				await setActive(pick.label);
-				ctx.ui.notify(
-					await switchReport(pick.label),
-					target?.dead ? "warning" : "info",
-				);
-				return;
+					return;
+				}
+				if (pick.act === "refresh") await refreshVisibleUsage(true);
+				else if (pick.act === "toggle") await toggleDisabled(pick.label);
+				else if (
+					!ctx.ui.confirm ||
+					(await ctx.ui.confirm(`Remove "${pick.label}" from the pool?`))
+				)
+					await removeFromPool(pick.label);
 			}
-			if (pick.act === "refresh") {
-				await refreshVisibleUsage(true);
-				ctx.ui.notify(
-					poolTable(readStore().accounts, pickActive(readStore()), readUsage()),
-					"info",
-				);
-				return;
-			}
-			if (pick.act === "toggle") {
-				const next = await toggleDisabled(pick.label);
-				ctx.ui.notify(
-					`"${pick.label}" is now ${next ? "disabled" : "enabled"}.`,
-					"info",
-				);
-				return;
-			}
-			// remove
-			if (
-				ctx.ui.confirm &&
-				!(await ctx.ui.confirm(`Remove "${pick.label}" from the pool?`))
-			)
-				return;
-			await removeFromPool(pick.label);
-			ctx.ui.notify(`Removed "${pick.label}" from the pool.`, "info");
 		},
 	});
 

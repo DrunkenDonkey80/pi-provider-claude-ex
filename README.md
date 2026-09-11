@@ -96,7 +96,22 @@ budget is ~28–30 requests per identity per *trailing* 60-minute window with no
 gradual refill, so a burst blocks an account for a full hour. All reads therefore
 go through one shared on-disk cache: 180s serve TTL, 180s minimum interval, at
 most 2 accounts per sweep, `Retry-After` + 60s margin on a 429. Repainting a list
-costs zero requests.
+costs zero requests. Only the account in use is polled in the background, every
+5 minutes (`ACTIVE_USAGE_MS`); the rest refresh on demand — `r` in `/claude-pool`
+or `cpool list --refresh`.
+
+### For other extensions
+
+```ts
+const { quota } = await import("pi-provider-claude-plus/index.ts");
+const q = quota();          // active pooled account; quota("label") for a specific one
+q?.five_hour?.pct           // 34
+q?.seven_day?.resets_at     // ISO string
+q?.at                       // when it was fetched (epoch ms)
+```
+
+Cache read only — no network, no rate-limit budget, safe to call on every
+render. Returns `undefined` when the account has no cached read yet.
 
 ## Files (in `$PI_CODING_AGENT_DIR`, default `~/.pi/agent`)
 
