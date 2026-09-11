@@ -47,7 +47,24 @@ generation — which is what actually keeps a login alive.
 /claude-pool-add <label>     snapshot the current /login anthropic account
 /claude-pool-remove <n|label>
 /claude-pool-disable <n|label>   hold out of / return to rotation (toggle)
+/claude-pool-export          write the logins to a portable file + clipboard
+/claude-pool-import [path|json]  load them on another machine
 ```
+
+In the `/claude-pool` list, keys act on the hovered row: `enter` switch,
+`r` refresh usage, `d` enable/disable, `-` remove, `esc` close. Refresh, toggle
+and remove re-present the updated list instead of closing it.
+
+### Moving accounts to another computer
+
+`/claude-pool-export` writes `~/.pi/agent/claude-pool-export.json` (path shown,
+contents copied to the clipboard) and `/claude-pool-import` takes either a file
+path or pasted JSON. What travels is the **refresh token** per account, which is
+all a new machine needs — no `/login anthropic` per account. Existing labels are
+merged over, so re-importing is safe.
+
+That file is as sensitive as the store itself: it grants access to the Claude
+subscriptions. Delete it once imported.
 
 A row looks like:
 

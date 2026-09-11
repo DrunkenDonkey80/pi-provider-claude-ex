@@ -366,6 +366,24 @@ await check("quota exposes the active account's windows", async () => {
 	assert.equal(quota("missing"), undefined);
 });
 
+// 7c. Export/import round-trip: refresh tokens are what must survive a move.
+await check("parseExport accepts both shapes and rejects junk", () => {
+	const accounts = [acct("a"), acct("b")];
+	assert.deepEqual(
+		store.parseExport(JSON.stringify({ accounts })).map((a) => a.label),
+		["a", "b"],
+	);
+	assert.equal(
+		store.parseExport(JSON.stringify(accounts))[1]?.refresh,
+		"rt-b-1",
+	);
+	assert.throws(() => store.parseExport("not json"), /not valid JSON/);
+	assert.throws(
+		() => store.parseExport('{"accounts":[{"label":"x"}]}'),
+		/refresh/,
+	);
+});
+
 // 8. The store must never be written world-readable (it holds refresh tokens).
 await check("store file is written 0600", () => {
 	seed([acct("a")]);

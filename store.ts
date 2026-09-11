@@ -251,5 +251,26 @@ export async function mutateStore<T>(
 	);
 }
 
+/**
+ * Accounts out of an export's text — `{accounts:[...]}` or a bare array.
+ * Only label+refresh matter; a refresh token is what survives a machine move.
+ * Throws on anything that yields no usable account.
+ */
+export function parseExport(text: string): Account[] {
+	let data: Account[] | { accounts?: Account[] };
+	try {
+		data = JSON.parse(text);
+	} catch {
+		throw new Error("not valid JSON");
+	}
+	const accounts = Array.isArray(data) ? data : data?.accounts;
+	const valid = (accounts ?? []).filter(
+		(a) => typeof a?.label === "string" && typeof a?.refresh === "string",
+	);
+	if (!valid.length)
+		throw new Error("no accounts with a label and refresh token");
+	return valid;
+}
+
 export const findAccount = (store: Store, label: string): Account | undefined =>
 	store.accounts.find((a) => a.label === label);

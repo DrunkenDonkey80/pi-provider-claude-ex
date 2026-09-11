@@ -1,9 +1,17 @@
 /** Slash commands: list accounts with quota, switch, add, remove, enable/disable. */
 
+import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { AGENT_DIR, type Account, mutateStore, readStore } from "./store.ts";
+import {
+	AGENT_DIR,
+	type Account,
+	mutateStore,
+	parseExport,
+	readStore,
+	writeJsonAtomic,
+} from "./store.ts";
 import {
 	activeAccount,
 	ensureFresh,
@@ -29,6 +37,7 @@ interface CustomComponent {
 interface Ui {
 	notify: (m: string, level?: string) => void;
 	confirm?: (title: string, body?: string) => Promise<boolean>;
+	input?: (prompt: string, initial?: string) => Promise<string | undefined>;
 	custom?: <T>(
 		build: (
 			tui: { requestRender: () => void },
@@ -173,6 +182,27 @@ function defaultLabel(accounts: Account[], profile: Profile): string {
 	const qualified = `${email} (${profile.plan ?? profile.org ?? "alt"})`;
 	if (!accounts.some((a) => a.label === qualified)) return qualified;
 	return `${qualified.slice(0, -1)} ${(profile.orgUuid ?? "").slice(0, 6)})`;
+}
+
+/** Where /claude-pool-export drops the portable copy of the logins. */
+const EXPORT_PATH = join(AGENT_DIR, "claude-pool-export.json");
+
+/** Best effort: the clipboard is a convenience, never a failure path. */
+function copyToClipboard(text: string): boolean {
+	const byPlatform: Record<string, string[]> = {
+		win32: ["clip"],
+		darwin: ["pbcopy"],
+	};
+	const [cmd, ...cmdArgs] = byPlatform[process.platform] ?? [
+		"xclip",
+		"-selection",
+		"clipboard",
+	];
+	try {
+		return spawnSync(cmd, cmdArgs, { input: text }).status === 0;
+	} catch {
+		return false;
+	}
 }
 
 /** Top up the usage cache for the accounts shown in an interactive list. */
@@ -365,6 +395,68 @@ export function setupCommands(pi: ExtensionAPI): void {
 			}
 			await removeFromPool(target.label);
 			ctx.ui.notify(`Removed "${target.label}" from the pool.`, "info");
+		},
+	});
+
+	register("claude-pool-export", {
+		description:
+			"Write the pooled Claude logins to a portable file (and the clipboard)",
+		handler: async (_args, ctx) => {
+			const accounts = readStore().accounts;
+			if (!accounts.length) {
+				ctx.ui.notify("No pooled accounts to export.", "warning");
+				return;
+			}
+			writeJsonAtomic(EXPORT_PATH, { accounts });
+			const copied = copyToClipboard(JSON.stringify({ accounts }, null, 2));
+			ctx.ui.notify(
+				`Exported ${accounts.length} account(s). This holds refresh tokens — treat it like a password.\n${EXPORT_PATH}${
+					copied ? "\nContents copied to the clipboard." : ""
+				}\nOn the other machine: /claude-pool-import`,
+				"info",
+			);
+		},
+	});
+
+	register("claude-pool-import", {
+		description:
+			"Import pooled Claude logins from an export file path or pasted JSON",
+		handler: async (args, ctx) => {
+			const answer = (
+				args.trim() ||
+				(await ctx.ui.input?.("Export file path or pasted JSON:", EXPORT_PATH)) ||
+				""
+			).trim();
+			if (!answer) return;
+			let imported: Account[];
+			try {
+				const path = answer.replace(/^["']|["']$/g, "");
+				imported = parseExport(
+					answer.startsWith("{") || answer.startsWith("[")
+						? answer
+						: readFileSync(path, "utf-8"),
+				);
+			} catch (e) {
+				ctx.ui.notify(`Import failed: ${(e as Error).message}`, "warning");
+				return;
+			}
+			await mutateStore((store) => {
+				for (const account of imported) {
+					const i = store.accounts.findIndex((a) => a.label === account.label);
+					// Merge over an existing label: the imported refresh token wins,
+					// local cooldown/usage bookkeeping is irrelevant on a new machine.
+					if (i >= 0) store.accounts[i] = { ...store.accounts[i], ...account };
+					else store.accounts.push(account);
+				}
+				if (!store.active) store.active = pickActive(store);
+			});
+			invalidateSnapshot();
+			ctx.ui.notify(
+				`Imported ${imported.length} account(s): ${imported
+					.map((a) => a.label)
+					.join(", ")}.\nRun /claude-pool to check them.`,
+				"info",
+			);
 		},
 	});
 
