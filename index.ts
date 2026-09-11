@@ -179,16 +179,29 @@ function setupPool(pi: ExtensionAPI): void {
 	// Supply the active pooled account's token to Pi's Anthropic transport.
 	// Subscription billing is preserved: Pi detects the OAuth path from the
 	// token's shape, so a pooled OAuth token still gets Claude Code headers.
-	const register = pi.registerProvider as unknown as (id: string, cfg: unknown) => void;
+	// SAFETY: registerProvider's declared config type churns between Pi
+	// versions; the cfg we pass only uses the stable oauth shape below.
+	const register = pi.registerProvider as unknown as (
+		id: string,
+		cfg: unknown,
+	) => void;
 	register("anthropic", {
 		oauth: {
 			name: `Claude (pool: ${labels.join("+")})`,
 			login: loginAnthropicOAuth,
-			async refreshToken(credentials: { access?: string; refresh?: string; expires?: number }) {
+			async refreshToken(credentials: {
+				access?: string;
+				refresh?: string;
+				expires?: number;
+			}) {
 				const label = pickActive(readStore());
 				const account = label ? await ensureFresh(label) : undefined;
 				return account
-					? { refresh: account.refresh, access: account.access, expires: account.expires }
+					? {
+							refresh: account.refresh,
+							access: account.access,
+							expires: account.expires,
+						}
 					: credentials;
 			},
 			getApiKey(credentials: { access?: string } | undefined) {

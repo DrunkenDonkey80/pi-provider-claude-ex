@@ -52,7 +52,7 @@ generation — which is what actually keeps a login alive.
 A row looks like:
 
 ```
-▸ 2. datecs:flex1 · 5h 34% (2h 11m) · 7d 71% (3d 4h) · Fable 12% · login exp 2026-11-04
+▸ 2. datecs:flex1 · 5h(2h 11m) [███░░░░░] 34% · 7d(3d 4h) [██████░░] 71% · Fable 12% · login exp 2026-11-04
 ```
 
 ## CLI (`cpool`) — works outside pi

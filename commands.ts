@@ -1,4 +1,4 @@
-/** Slash commands: list accounts with quota, switch, add, enable/disable. */
+/** Slash commands: list accounts with quota, switch, add, remove, enable/disable. */
 
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -15,10 +15,28 @@ import { accountLine, poolTable, resolveAccount } from "./format.ts";
 import { collectUsage, readUsage } from "./usage.ts";
 import { type Profile, fetchProfile } from "./oauth.ts";
 
+/** Minimal structural types for ctx.ui.custom — keeps this file independent of
+ *  pi-tui's type tree, which is unresolvable outside pi. */
+interface UiTheme {
+	fg: (color: string, text: string) => string;
+	bold: (text: string) => string;
+}
+interface CustomComponent {
+	render: (width: number) => string[];
+	invalidate: () => void;
+	handleInput: (data: string) => void;
+}
 interface Ui {
 	notify: (m: string, level?: string) => void;
-	select: (title: string, options: string[]) => Promise<string | undefined>;
 	confirm?: (title: string, body?: string) => Promise<boolean>;
+	custom?: <T>(
+		build: (
+			tui: { requestRender: () => void },
+			theme: UiTheme,
+			keybindings: unknown,
+			done: (value: T) => void,
+		) => CustomComponent,
+	) => Promise<T>;
 }
 type Ctx = { ui: Ui };
 type Register = (
@@ -63,9 +81,7 @@ function readAnthropicAuth():
  * but bill and rate-limit separately — so matching on email merged two
  * independent quota pools into one entry and silently dropped one login.
  */
-export async function attachCurrentLogin(
-	labelHint?: string,
-): Promise<
+export async function attachCurrentLogin(labelHint?: string): Promise<
 	| {
 			label: string;
 			matched: "identity" | "label" | "new";
@@ -89,7 +105,12 @@ export async function attachCurrentLogin(
 			if (s.active === owner.label) s.active = labelHint;
 		});
 		invalidateSnapshot();
-		return { label: labelHint, matched: "label", email: owner.email, plan: owner.plan };
+		return {
+			label: labelHint,
+			matched: "label",
+			email: owner.email,
+			plan: owner.plan,
+		};
 	}
 
 	let profile: Profile = {};
@@ -102,9 +123,13 @@ export async function attachCurrentLogin(
 	// account uuid to every subscription it owns and picks the org server-side,
 	// so identity alone cannot split a Pro org from a team seat: only the user
 	// knows which login they just made. Without a label, identity decides.
-	const byLabel = labelHint ? resolveAccount(store.accounts, labelHint) : undefined;
-	const target = byLabel ?? (labelHint ? undefined : findByIdentity(store.accounts, profile));
-	const label = target?.label ?? labelHint ?? defaultLabel(store.accounts, profile);
+	const byLabel = labelHint
+		? resolveAccount(store.accounts, labelHint)
+		: undefined;
+	const target =
+		byLabel ?? (labelHint ? undefined : findByIdentity(store.accounts, profile));
+	const label =
+		target?.label ?? labelHint ?? defaultLabel(store.accounts, profile);
 	await upsertAccount(label, {
 		...creds,
 		uuid: profile.uuid,
@@ -126,7 +151,10 @@ export async function attachCurrentLogin(
  * existed matches on account alone, but only when no entry already claims this
  * org — otherwise a second subscription would overwrite the first.
  */
-export function findByIdentity(accounts: Account[], profile: Profile): Account | undefined {
+export function findByIdentity(
+	accounts: Account[],
+	profile: Profile,
+): Account | undefined {
 	if (!profile.uuid) return undefined;
 	const sameAccount = accounts.filter((a) => a.uuid === profile.uuid);
 	if (!profile.orgUuid) return sameAccount[0];
@@ -163,8 +191,8 @@ async function refreshVisibleUsage(force: boolean): Promise<void> {
 
 export function setupCommands(pi: ExtensionAPI): void {
 	// SAFETY: Pi's public registerCommand type is generic over its own ctx; the
-	// handler only ever touches ctx.ui.{notify,select}, which every Pi build
-	// provides. Narrowing to Ui keeps this file independent of the ctx type's
+	// handlers only ever touch the Ui members declared below, which TUI builds
+	// provide. Narrowing to Ui keeps this file independent of the ctx type's
 	// version-to-version churn.
 	const register = pi.registerCommand as unknown as Register;
 
@@ -187,7 +215,10 @@ export function setupCommands(pi: ExtensionAPI): void {
 					return;
 				}
 				await setActive(target.label);
-				ctx.ui.notify(await switchReport(target.label), target.dead ? "warning" : "info");
+				ctx.ui.notify(
+					await switchReport(target.label),
+					target.dead ? "warning" : "info",
+				);
 				return;
 			}
 
@@ -195,49 +226,107 @@ export function setupCommands(pi: ExtensionAPI): void {
 			const fresh = readStore();
 			const cache = readUsage();
 			const active = pickActive(fresh);
-			const rows = fresh.accounts.map((a, i) =>
-				accountLine(a, i, cache[a.label], a.label === active),
-			);
-			const REFRESH = "↻ refresh usage now";
-			const TOGGLE = "⏸ enable / disable an account…";
-			const choice = await ctx.ui.select("Claude accounts — pick one to switch", [
-				...rows,
-				REFRESH,
-				TOGGLE,
-			]);
-			if (!choice) return; // Esc
-
-			if (choice === REFRESH) {
-				await refreshVisibleUsage(true);
-				const c2 = readUsage();
-				const f2 = readStore();
-				ctx.ui.notify(poolTable(f2.accounts, pickActive(f2), c2), "info");
+			if (!ctx.ui.custom) {
+				ctx.ui.notify(
+					"Interactive menu needs a TUI — use /claude-pool <n|label> or cpool.",
+					"warning",
+				);
 				return;
 			}
-			if (choice === TOGGLE) {
-				const pick = await ctx.ui.select(
-					"Toggle account",
-					fresh.accounts.map(
-						(a, i) => `${i + 1}. ${a.label} — ${a.disabled ? "disabled" : "enabled"}`,
-					),
-				);
-				if (!pick) return;
-				const index = Number(pick.split(".")[0]) - 1;
-				const target = fresh.accounts[index];
-				if (!target) return;
-				const next = await toggleDisabled(target.label);
+			// Dynamic: cpool and tests load this module without pi's node_modules.
+			const { Container, SelectList, Text } = await import(
+				"@earendil-works/pi-tui"
+			);
+			type MenuAction = {
+				act: "switch" | "refresh" | "toggle" | "remove";
+				label: string;
+			};
+			const pick = await ctx.ui.custom<MenuAction | null>(
+				(tui, theme, _kb, done) => {
+					const list = new SelectList(
+						fresh.accounts.map((a, i) => ({
+							value: a.label,
+							label: accountLine(a, i, cache[a.label], a.label === active),
+						})),
+						Math.min(fresh.accounts.length, 12),
+						{
+							selectedPrefix: (t: string) => theme.fg("accent", t),
+							selectedText: (t: string) => theme.fg("accent", t),
+							description: (t: string) => theme.fg("muted", t),
+							scrollInfo: (t: string) => theme.fg("dim", t),
+							noMatch: (t: string) => theme.fg("warning", t),
+						},
+					);
+					list.onSelect = (item: { value: string }) =>
+						done({ act: "switch", label: item.value });
+					list.onCancel = () => done(null);
+					const box = new Container();
+					box.addChild(
+						new Text(theme.fg("accent", theme.bold("Claude accounts")), 1, 0),
+					);
+					box.addChild(list);
+					box.addChild(
+						new Text(
+							theme.fg(
+								"dim",
+								"enter switch • r refresh usage • d enable/disable • - remove • esc close",
+							),
+							1,
+							0,
+						),
+					);
+					const onKey = (act: MenuAction["act"]) => {
+						const item = list.getSelectedItem();
+						if (item) done({ act, label: item.value });
+					};
+					return {
+						render: (w: number) => box.render(w),
+						invalidate: () => box.invalidate(),
+						handleInput: (data: string) => {
+							if (data === "-") return onKey("remove");
+							if (data === "r") return onKey("refresh");
+							if (data === "d") return onKey("toggle");
+							list.handleInput(data);
+							tui.requestRender();
+						},
+					};
+				},
+			);
+			if (!pick) return; // Esc
+
+			if (pick.act === "switch") {
+				const target = fresh.accounts.find((a) => a.label === pick.label);
+				await setActive(pick.label);
 				ctx.ui.notify(
-					`"${target.label}" is now ${next ? "disabled" : "enabled"}.`,
+					await switchReport(pick.label),
+					target?.dead ? "warning" : "info",
+				);
+				return;
+			}
+			if (pick.act === "refresh") {
+				await refreshVisibleUsage(true);
+				ctx.ui.notify(
+					poolTable(readStore().accounts, pickActive(readStore()), readUsage()),
 					"info",
 				);
 				return;
 			}
-
-			const index = rows.indexOf(choice);
-			const target = fresh.accounts[index];
-			if (!target) return;
-			await setActive(target.label);
-			ctx.ui.notify(await switchReport(target.label), target.dead ? "warning" : "info");
+			if (pick.act === "toggle") {
+				const next = await toggleDisabled(pick.label);
+				ctx.ui.notify(
+					`"${pick.label}" is now ${next ? "disabled" : "enabled"}.`,
+					"info",
+				);
+				return;
+			}
+			// remove
+			if (
+				ctx.ui.confirm &&
+				!(await ctx.ui.confirm(`Remove "${pick.label}" from the pool?`))
+			)
+				return;
+			await removeFromPool(pick.label);
+			ctx.ui.notify(`Removed "${pick.label}" from the pool.`, "info");
 		},
 	});
 
@@ -280,18 +369,15 @@ export function setupCommands(pi: ExtensionAPI): void {
 	});
 
 	register("claude-pool-remove", {
-		description: "Remove an account from the pool. Usage: /claude-pool-remove <n|label>",
+		description:
+			"Remove an account from the pool. Usage: /claude-pool-remove <n|label>",
 		handler: async (args, ctx) => {
 			const target = resolveAccount(readStore().accounts, args);
 			if (!target) {
 				ctx.ui.notify("Usage: /claude-pool-remove <n|label>", "warning");
 				return;
 			}
-			await mutateStore((store) => {
-				store.accounts = store.accounts.filter((a) => a.label !== target.label);
-				if (store.active === target.label) store.active = pickActive(store);
-			});
-			invalidateSnapshot();
+			await removeFromPool(target.label);
 			ctx.ui.notify(`Removed "${target.label}" from the pool.`, "info");
 		},
 	});
@@ -306,9 +392,21 @@ export function setupCommands(pi: ExtensionAPI): void {
 				return;
 			}
 			const next = await toggleDisabled(target.label);
-			ctx.ui.notify(`"${target.label}" is now ${next ? "disabled" : "enabled"}.`, "info");
+			ctx.ui.notify(
+				`"${target.label}" is now ${next ? "disabled" : "enabled"}.`,
+				"info",
+			);
 		},
 	});
+}
+
+/** Drop an account from the pool (shared by /claude-pool-remove and the menu). */
+async function removeFromPool(label: string): Promise<void> {
+	await mutateStore((store) => {
+		store.accounts = store.accounts.filter((a) => a.label !== label);
+		if (store.active === label) store.active = pickActive(store);
+	});
+	invalidateSnapshot();
 }
 
 export async function toggleDisabled(label: string): Promise<boolean> {
@@ -316,7 +414,8 @@ export async function toggleDisabled(label: string): Promise<boolean> {
 		const account = store.accounts.find((a) => a.label === label);
 		if (!account) return false;
 		account.disabled = !account.disabled;
-		if (account.disabled && store.active === label) store.active = pickActive(store);
+		if (account.disabled && store.active === label)
+			store.active = pickActive(store);
 		return !!account.disabled;
 	});
 	invalidateSnapshot();
@@ -331,7 +430,8 @@ export async function toggleDisabled(label: string): Promise<boolean> {
  */
 async function switchReport(label: string): Promise<string> {
 	const account = await ensureFresh(label, { force: true });
-	if (!account?.dead) return `Claude account → "${label}". Next request uses it.`;
+	if (!account?.dead)
+		return `Claude account → "${label}". Next request uses it.`;
 	const serving = pickActive(readStore());
 	return (
 		`"${label}" login is revoked (invalid_grant) — Anthropic kills the stored token when you log into that account again.\n` +
@@ -364,7 +464,8 @@ export async function upsertAccount(
 			cooldownUntil: 0,
 		};
 		const index = store.accounts.findIndex((a) => a.label === label);
-		if (index >= 0) store.accounts[index] = { ...store.accounts[index], ...entry };
+		if (index >= 0)
+			store.accounts[index] = { ...store.accounts[index], ...entry };
 		else store.accounts.push(entry);
 		if (!store.active) store.active = label;
 		return store.accounts.length;

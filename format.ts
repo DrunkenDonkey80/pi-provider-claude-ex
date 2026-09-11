@@ -17,12 +17,26 @@ function resetsIn(iso: string | undefined): string {
 	if (!iso) return "";
 	const at = Date.parse(iso);
 	if (!Number.isFinite(at)) return "";
-	return ` (${relative(at - Date.now())})`;
+	return `(${relative(at - Date.now())})`;
 }
 
-function window(name: string, w: { pct: number; resets_at?: string } | undefined): string {
+/** Yellow past half the window, red past three quarters. */
+function quotaColor(pct: number, s: string): string {
+	if (pct > 75) return `\x1b[31m${s}\x1b[0m`;
+	if (pct > 50) return `\x1b[33m${s}\x1b[0m`;
+	return s;
+}
+
+function window(
+	name: string,
+	w: { pct: number; resets_at?: string } | undefined,
+): string {
 	if (!w) return `${name} —`;
-	return `${name} ${Math.round(w.pct)}%${resetsIn(w.resets_at)}`;
+	const pct = Math.round(w.pct);
+	const bar =
+		"█".repeat(Math.round((pct / 100) * 8)) +
+		"░".repeat(8 - Math.round((pct / 100) * 8));
+	return quotaColor(pct, `${name}${resetsIn(w.resets_at)} [${bar}] ${pct}%`);
 }
 
 export function accountState(account: Account, now = Date.now()): string {
@@ -54,14 +68,17 @@ export function accountLine(
 		window("5h", entry?.five_hour),
 		window("7d", entry?.seven_day),
 	];
-	for (const s of entry?.scoped ?? []) parts.push(`${s.name} ${Math.round(s.pct)}%`);
+	for (const s of entry?.scoped ?? [])
+		parts.push(`${s.name} ${Math.round(s.pct)}%`);
 	if (entry?.spend)
 		parts.push(
 			`spend ${entry.spend.used.toFixed(2)}/${entry.spend.limit.toFixed(2)} ${entry.spend.currency}`,
 		);
 	if (state !== "ok") parts.push(state);
 	if (account.refreshExpires)
-		parts.push(`login exp ${new Date(account.refreshExpires).toISOString().slice(0, 10)}`);
+		parts.push(
+			`login exp ${new Date(account.refreshExpires).toISOString().slice(0, 10)}`,
+		);
 	if (entry?.error) parts.push(`usage: ${entry.error}`);
 	else if (entry?.at && Date.now() - entry.at > SERVE_TTL_MS)
 		parts.push(`as of ${relative(Date.now() - entry.at)} ago`);
@@ -74,20 +91,27 @@ export function poolTable(
 	activeLabel: string | undefined,
 	cache: UsageCache,
 ): string {
-	if (!accounts.length) return "(no accounts — /claude-pool-add <label> after /login anthropic)";
+	if (!accounts.length)
+		return "(no accounts — /claude-pool-add <label> after /login anthropic)";
 	return accounts
 		.map((a, i) => accountLine(a, i, cache[a.label], a.label === activeLabel))
 		.join("\n");
 }
 
 /** Resolve "2", "datecs:home", or a unique substring to a label. */
-export function resolveAccount(accounts: Account[], query: string): Account | undefined {
+export function resolveAccount(
+	accounts: Account[],
+	query: string,
+): Account | undefined {
 	const q = query.trim();
 	if (!q) return undefined;
 	const n = Number(q);
-	if (Number.isInteger(n) && n >= 1 && n <= accounts.length) return accounts[n - 1];
+	if (Number.isInteger(n) && n >= 1 && n <= accounts.length)
+		return accounts[n - 1];
 	const exact = accounts.find((a) => a.label === q);
 	if (exact) return exact;
-	const hits = accounts.filter((a) => a.label.toLowerCase().includes(q.toLowerCase()));
+	const hits = accounts.filter((a) =>
+		a.label.toLowerCase().includes(q.toLowerCase()),
+	);
 	return hits.length === 1 ? hits[0] : undefined;
 }
