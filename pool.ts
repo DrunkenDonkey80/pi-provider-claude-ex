@@ -430,11 +430,18 @@ export async function tick(opts: { usage?: boolean } = {}): Promise<void> {
 	if (active && now - (readUsage()[active]?.at ?? 0) >= ACTIVE_USAGE_MS)
 		await collectUsage([active], tokenFor, { max: 1 });
 
-	if (!autoSwitchDue(readStore(), now)) return;
-	// Stamp first: a failed read must not turn into a retry every tick.
-	await mutateStore((s) => {
+	// Claim the window INSIDE the store lock. Checking and then stamping lets
+	// every session running in parallel pass the check before the first one
+	// writes, so N sessions would each re-pick (and each re-read every
+	// account's usage) in the same 20-minute window. Claiming atomically means
+	// one sweep total, whichever process gets there first. Stamping before the
+	// read also stops a failed read becoming a retry on every tick.
+	const claimed = await mutateStore((s) => {
+		if (!autoSwitchDue(s, now)) return false;
 		s.autoSwitchAt = now;
+		return true;
 	});
+	if (!claimed) return;
 	invalidateSnapshot();
 	const picked = await pickNext({ force: true });
 	if (picked) log(`auto-switch → ${picked}`);

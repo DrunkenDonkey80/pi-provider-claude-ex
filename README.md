@@ -109,10 +109,41 @@ In the `/claude-pool` list, keys act on the hovered row: `enter` switch,
 and remove re-present the updated list instead of closing it.
 
 The list is sorted for human scanning, and automatic selection takes its pick
-from the same order: usable accounts first by **soonest 7d reset** (weekly quota
-is the perishable one — whatever is left on it evaporates), with lowest 5h usage
-as the tie-break; next, 5h-full accounts with under 90% weekly usage by soonest
-5h reset; then other healthy, cooling, and dead/disabled accounts. Row numbers are rankings
+from the same order. Usable accounts rank by:
+
+```text
+rank = time_left_7d  -  3d * free_7d  -  2d * gate * (1 - time_left_5h / 5h)
+gate = min(1, free_5h / 0.5)
+```
+
+**The weekly deadline is the spine**, because that is when unspent quota dies.
+Unused quota then pulls an account earlier: a week 20% spent has more going to
+waste than one 80% spent, so among accounts resetting around the same time, the
+idle one goes first.
+
+The weight on unused quota is the part that took tuning. Charging a **full week**
+— the natural "slack" form, `free_7d - time_left_7d/7d` — lets idleness dominate:
+an account resetting in *six days* at 13% used outranked accounts with half the
+time left. Six days is ample runway to spend it later, so that is wrong. **Three
+days** keeps unused quota strong enough to reorder accounts within a day or two
+of each other, without letting a far-off reset reach the top on idleness alone.
+Raise it toward `7d` to favour draining under-used accounts; lower it toward `1d`
+to rank almost purely by deadline.
+
+An expiring 5h window is free capacity: drain it and a fresh one opens
+immediately. So among accounts close on the week, the one whose 5h window is
+nearly over goes first, and you fall back to the other afterwards. Capping the
+nudge at two days keeps it a tie-breaker: an account with days of runway can't
+reach the top on a 15-minute 5h window alone. `gate` is a threshold, not a factor
+— scaling by remaining 5h quota would make the right cap depend on 5h usage, so
+no single constant could order every case; a spent window simply earns no nudge.
+
+Note the list and the fallback `switchScore` above weigh the week differently on
+purpose: the fallback runs only when *nothing* is usable, where use-it-or-lose-it
+is the only question left.
+
+Then come 5h-full accounts with under 90% weekly usage by soonest 5h reset; then
+other healthy, cooling, and dead/disabled accounts. Row numbers are rankings
 only, never command targets — commands accept labels or unique substrings.
 
 A **disabled** account is held out of rotation but still kept logged in: the
@@ -151,7 +182,16 @@ cpool daemon [--once]      # single-writer keep-alive + usage sweep
 ```
 
 Run `cpool daemon` (systemd/Task Scheduler/`--once` from cron) if you want the
-pool kept warm even when no pi session is open.
+pool kept warm even when no pi session is open. Live sessions detect its
+heartbeat and skip their own sweeps, leaving a single writer.
+
+**Many sessions at once** costs about the same as one. Grants are deduplicated by
+a per-lineage lock with a consume-gate, usage polls are claimed under the cache
+lock, and the auto-switch window is claimed inside the store lock — so N sessions
+make one refresh, one poll, and one re-pick between them, not N. Sweeps also
+start at a random offset and jitter each tick, because a host that relaunches
+every saved session after a reboot would otherwise keep them firing in lockstep
+forever.
 
 ## Enrolling accounts
 

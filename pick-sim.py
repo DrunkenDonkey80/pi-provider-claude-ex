@@ -95,6 +95,47 @@ def slack_picker(A, B, C=0.0, clamp5=False):
     return pick
 
 
+def display_picker(k_hours):
+    """The shipped ranking: weekly slack leads, but an expiring 5h window that
+    still has quota pulls an account forward by up to k_hours of a week.
+
+        slack7 = free_7d - t7 / W7            # quota left minus time left
+        gate   = min(1, free_5h / 0.5)        # nothing to drain => no nudge
+        rank   = -slack7 - (k / W7) * gate * (1 - t5 / W5)    (lower = use first)
+
+    Time alone is the wrong signal: a week resetting in 1 day with 60% already
+    spent has less going to waste than one resetting in 3 days with 20% spent.
+    slack7 is "quota left minus time left to spend it", so the underused account
+    ranks first -- the same term the fallback switchScore uses.
+
+    Draining a 5h window just before it resets is free capacity: you spend it
+    and immediately get a fresh window. So when two accounts are close on the
+    week, take the one whose 5h window is about to roll over. k bounds how much
+    weekly urgency that is worth, which keeps it a tie-breaker: an account with
+    days of weekly slack can't reach the top on a 15-minute 5h window alone.
+
+    The gate is a threshold, not a factor. Scaling the nudge by free_5h makes
+    the k that satisfies a given ordering depend on 5h usage (40/f < k < 64/f
+    for the reference cases), so no single k works for every f. Gating instead
+    keeps the trade-off in time units: plenty left => full nudge, nearly
+    drained => none.
+    """
+    k = k_hours * HOUR
+
+    def pick(accounts, t):
+        def rank(a):
+            v = a.view(t)
+            slack7 = (1 - v["pct7"] / 100) - v["t7"] / W7
+            gate = min(1.0, (1 - v["pct5"] / 100) / 0.5)
+            drain = gate * (1 - min(v["t5"], W5) / W5)
+            return -slack7 - (k / W7) * drain
+
+        return min(accounts, key=rank)
+
+    pick.__name__ = f"display(k={k_hours}h)"
+    return pick
+
+
 def pick_random(accounts, t):
     return random.choice(accounts)
 
@@ -102,8 +143,18 @@ def pick_random(accounts, t):
 # ─── simulation ─────────────────────────────────────────────────────────────
 def run(picker, seed, plans, demand_scale=1.0, sticky=True):
     rng = random.Random(seed)
+    # Jitter the weekly boundaries. Spacing them exactly 2 days apart made every
+    # pair of accounts either tied or 48h apart on the week, so a tie-break
+    # worth <48h could never change the order and every k scored the same.
+    # Real pools are signed up on arbitrary days; that's where "close on the
+    # week, so use the expiring 5h window first" actually applies.
     accounts = [
-        Account(f"{p}{i}", cap5, cap7, week_start=(i % 3) * 2 * 24 * HOUR)
+        Account(
+            f"{p}{i}",
+            cap5,
+            cap7,
+            week_start=(i % 3) * 2 * 24 * HOUR + rng.uniform(0, 2 * 24 * HOUR),
+        )
         for i, (p, cap5, cap7) in enumerate(plans)
     ]
     active = accounts[0]
@@ -177,6 +228,12 @@ if __name__ == "__main__":
         ("clamp, capacity 1.0", slack_picker(1.0, 2.0, 1.0, clamp5=True)),
         ("slack A=1 B=3", slack_picker(1.0, 3.0)),
         ("slack A=4 B=1", slack_picker(4.0, 1.0)),
+        # Display/auto-pick ranking: 7d urgency, nudged by an expiring 5h window.
+        ("display k=0h (7d only)", display_picker(0)),
+        ("display k=24h", display_picker(24)),
+        ("display k=48h", display_picker(48)),
+        ("display k=72h", display_picker(72)),
+        ("display k=120h", display_picker(120)),
     ]
     # Non-sticky: re-pick on every burst. This is the only regime where the 5h
     # term can discriminate — sticky use drains a 5h window to zero before

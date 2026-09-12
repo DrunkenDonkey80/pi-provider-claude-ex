@@ -510,6 +510,116 @@ await check("display sorts ready accounts first, then useful 5h resets", () => {
 // 7b. One email, several subscriptions: a personal Pro org and a team seat
 //     share an email but bill and rate-limit separately. Matching on email
 //     merged them into one entry and silently dropped a login.
+// An expiring 5h window is free capacity: drain it and a fresh one opens. So
+// among accounts close on the week, the soonest 5h reset goes first — but the
+// nudge is capped at two days, so plenty of weekly slack still outranks it.
+await check(
+	"an expiring 5h window breaks a close 7d race, but can't win one",
+	() => {
+		const now = Date.parse("2026-01-01T00:00:00Z");
+		const in_ = (ms: number) => new Date(now + ms).toISOString();
+		const HOUR = 3_600_000;
+		const DAY = 24 * HOUR;
+		const accounts = [
+			acct("wk2d-5h4h"),
+			acct("wk3d-5h1h"),
+			acct("wk4d-5h15m"),
+			acct("wk3d-5h10m-spent"),
+		] as never;
+		const seven = (d: number) => ({ pct: 20, resets_at: in_(d * DAY) });
+		const cache = {
+			// Soonest on the week, but 4h of its 5h window still ahead of it.
+			"wk2d-5h4h": {
+				five_hour: { pct: 20, resets_at: in_(4 * HOUR) },
+				seven_day: seven(2),
+			},
+			// A day further out, 5h nearly over: drain it now, then fall back to the
+			// account above.
+			"wk3d-5h1h": {
+				five_hour: { pct: 20, resets_at: in_(HOUR) },
+				seven_day: seven(3),
+			},
+			// Two extra days of weekly slack: a 15-minute 5h window can't lift it.
+			"wk4d-5h15m": {
+				five_hour: { pct: 20, resets_at: in_(HOUR / 4) },
+				seven_day: seven(4),
+			},
+			// 5h about to reset, but spent: nothing to drain, so no nudge.
+			"wk3d-5h10m-spent": {
+				five_hour: { pct: 95, resets_at: in_(HOUR / 6) },
+				seven_day: seven(3),
+			},
+		} as never;
+		assert.deepEqual(
+			format.sortAccountsForDisplay(accounts, cache, now).map((a) => a.label),
+			["wk3d-5h1h", "wk2d-5h4h", "wk4d-5h15m", "wk3d-5h10m-spent"],
+		);
+	},
+);
+
+// A real pool, ordered the way its owner wants it. Time to the weekly reset is
+// the spine; unused quota reorders accounts within a day or two of each other
+// (dobrin at 23% used beats flex2/datecs despite resetting LATER than both);
+// an account six days out stays last however idle it is, because six days is
+// plenty of runway to spend it later.
+await check("weekly deadline leads, unused quota reorders near ties", () => {
+	const now = Date.parse("2026-01-01T00:00:00Z");
+	const HOUR = 3_600_000;
+	const DAY = 24 * HOUR;
+	const MIN = 60_000;
+	const at = (ms: number) => new Date(now + ms).toISOString();
+	// label, 7d left, 7d pct, 5h pct, 5h left (undefined = window not started)
+	const rows: [string, number, number, number, number | undefined][] = [
+		["dobrin", 3 * DAY + 20 * HOUR, 23, 83, 4 * HOUR + 12 * MIN],
+		["home", 2 * DAY + 10 * HOUR, 53, 82, 4 * HOUR + 42 * MIN],
+		["ddenkov", 6 * DAY + 11 * HOUR, 13, 0, undefined],
+		["flex2", 3 * DAY + 13 * HOUR, 65, 28, 3 * HOUR + 42 * MIN],
+		["datecs", 3 * DAY + 6 * HOUR, 79, 0, undefined],
+	];
+	const accounts = rows.map(([label]) => acct(label)) as never;
+	const cache = Object.fromEntries(
+		rows.map(([label, left7, pct7, pct5, left5]) => [
+			label,
+			{
+				five_hour: {
+					pct: pct5,
+					resets_at: left5 === undefined ? undefined : at(left5),
+				},
+				seven_day: { pct: pct7, resets_at: at(left7) },
+			},
+		]),
+	) as never;
+	assert.deepEqual(
+		format.sortAccountsForDisplay(accounts, cache, now).map((a) => a.label),
+		["home", "dobrin", "flex2", "datecs", "ddenkov"],
+	);
+});
+
+// A host that relaunches every saved session at once starts N sweeps in the
+// same instant. They all read the same cache snapshot and all see the label as
+// due, so without claiming the slot under the lock every one of them spends a
+// request on it.
+await check(
+	"concurrent usage polls claim the slot, so only one fetches",
+	async () => {
+		rmSync(store.USAGE_PATH, { force: true });
+		let polls = 0;
+		const token = async () => {
+			polls++;
+			return undefined; // stop before the network; the claim is what's under test
+		};
+		await Promise.all([
+			usage.collectUsage(["racer"], token, { max: 1 }),
+			usage.collectUsage(["racer"], token, { max: 1 }),
+			usage.collectUsage(["racer"], token, { max: 1 }),
+			usage.collectUsage(["racer"], token, { max: 1 }),
+			usage.collectUsage(["racer"], token, { max: 1 }),
+		]);
+		assert.equal(polls, 1, "only the caller that claimed the slot may poll");
+		rmSync(store.USAGE_PATH, { force: true });
+	},
+);
+
 await check("findByIdentity keys on (account, org), not email", async () => {
 	const { findByIdentity } = await import("./commands.ts");
 	const pro = {

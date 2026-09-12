@@ -39,6 +39,9 @@ import {
 import { readStore } from "./store.ts";
 import { readUsage, type UsageEntry } from "./usage.ts";
 
+/** Random spread added to each sweep, so parallel sessions don't stay in step. */
+const SWEEP_JITTER_MS = 10_000;
+
 /**
  * 5h / 7d quota for the pooled account in use (or `label`), read from the
  * shared on-disk cache — no network, safe to call as often as you like.
@@ -108,11 +111,22 @@ function setupPool(pi: ExtensionAPI): void {
 
 	// Full sweep (keep-alive grants + usage cache) only when no `cpool daemon`
 	// is running — a single writer is cheaper and races less.
-	const sweep = setInterval(() => {
-		if (daemonAlive()) return;
-		void tick();
-	}, TICK_MS);
-	sweep.unref?.(); // never keep short-lived CLI invocations alive
+	//
+	// Spread the sweeps out. A host that relaunches every saved session at once
+	// (Herdr after a reboot) starts N of these in the same instant, and a fixed
+	// interval keeps them locked in that formation forever — every lock and
+	// claim contended by all N, every time. A random first wake breaks up the
+	// convoy and per-tick jitter stops it re-forming. The claims are correct
+	// without this; jitter just keeps them uncontended.
+	let sweep: ReturnType<typeof setTimeout> | undefined;
+	const scheduleSweep = (delay: number): void => {
+		sweep = setTimeout(() => {
+			if (!daemonAlive()) void tick();
+			scheduleSweep(TICK_MS + Math.random() * SWEEP_JITTER_MS);
+		}, delay);
+		sweep.unref?.(); // never keep short-lived CLI invocations alive
+	};
+	scheduleSweep(Math.random() * TICK_MS);
 
 	// PRIMARY cap detector: the Anthropic SDK throws on 429/529 before pi-ai's
 	// onResponse callback runs, so the error lands on the assistant message.

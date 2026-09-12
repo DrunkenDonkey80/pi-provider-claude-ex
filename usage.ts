@@ -51,6 +51,35 @@ async function patchUsage(label: string, patch: UsageEntry): Promise<void> {
 	}
 }
 
+/**
+ * Reserve a label's next poll, atomically. Returns false when someone else
+ * already holds it.
+ *
+ * The slot is held for the normal interval; the success/failure patch that
+ * follows overwrites it with the real backoff moments later. So a process that
+ * dies mid-fetch costs one skipped interval, never a permanently stuck label.
+ */
+async function claimPoll(
+	label: string,
+	now: number,
+	force: boolean,
+): Promise<boolean> {
+	try {
+		return await withLock(USAGE_PATH, () => {
+			const cache = readUsage();
+			const entry = cache[label];
+			if (!force && (entry?.nextPollAt ?? 0) > now) return false;
+			cache[label] = { ...entry, nextPollAt: now + MIN_INTERVAL_MS };
+			writeJsonAtomic(USAGE_PATH, cache);
+			return true;
+		});
+	} catch {
+		// Lock busy or unreadable: assume another process is on it. Skipping a
+		// poll is free; double-polling is what we're here to prevent.
+		return false;
+	}
+}
+
 const W5_MS = 5 * 3_600_000;
 const W7_MS = 7 * 24 * 3_600_000;
 /** A window at or above this counts as spent (the server rounds percentages). */
@@ -165,6 +194,11 @@ export async function collectUsage(
 		);
 
 	for (const label of due) {
+		// Reserve the slot before spending a request on it. `due` came from a
+		// snapshot, so N processes waking together all see the same label as due
+		// and would all fetch it. Claiming under the cache lock means one wins
+		// and the rest skip.
+		if (!(await claimPoll(label, Date.now(), opts.force === true))) continue;
 		const token = await getToken(label);
 		if (!token) {
 			const backoff = backoffFrom(label);

@@ -152,6 +152,54 @@ const resetAt = (iso: string | undefined): number => {
 	return Number.isFinite(at) ? at : Number.POSITIVE_INFINITY;
 };
 
+const WINDOW_5H = 5 * HOUR;
+/** What an entirely unused week is worth, expressed as time-to-reset. */
+const WEEKLY_QUOTA_WEIGHT = 3 * DAY;
+/** What an about-to-reset 5h window is worth, same units. */
+const FIVE_H_NUDGE = 2 * DAY;
+
+/**
+ * Where a usable account belongs in the list — lower goes first.
+ *
+ *   rank = time_left_7d
+ *        - WEEKLY_QUOTA_WEIGHT * quota_left_7d
+ *        - FIVE_H_NUDGE * gate * (1 - time_left_5h / 5h)
+ *
+ * Time to the weekly reset is the spine: that is the deadline the quota dies
+ * on. Unused quota then pulls an account earlier, because a week that is 20%
+ * spent has more going to waste than one that is 80% spent.
+ *
+ * The weight on unused quota is what took tuning. Charging a full week (the
+ * natural "slack" formulation, quota_left - time_left/7d) makes idleness
+ * dominate: an account resetting in SIX days at 13% used outranked accounts
+ * with half the time left, which is wrong — six days is plenty of runway to
+ * spend it later. Three days keeps it a strong modifier that can reorder
+ * accounts within a day or two of each other, without letting a far-off reset
+ * reach the top on idleness alone. Raise it toward 7d to favour draining
+ * under-used accounts; lower it toward 1d to rank almost purely by deadline.
+ *
+ * A 5h window about to roll over is free capacity: drain it now and a fresh one
+ * opens immediately. So among accounts close on the week, the one whose 5h
+ * window expires soonest comes first. `gate` is a threshold, not a factor —
+ * scaling by remaining 5h quota would make the right cap depend on 5h usage, so
+ * no single constant could order every case. Nearly drained means nothing to
+ * drain, so no nudge.
+ */
+const readyRank = (
+	r: { reset7: number; reset5: number; pct5: number; pct7: number },
+	now: number,
+): number => {
+	const left5 = Math.min(Math.max(r.reset5 - now, 0), WINDOW_5H);
+	const left7 = Math.max(r.reset7 - now, 0);
+	const free7 = 1 - Math.min(r.pct7, 100) / 100;
+	const gate = Math.min(1, (1 - Math.min(r.pct5, 100) / 100) / 0.5);
+	return (
+		left7 -
+		WEEKLY_QUOTA_WEIGHT * free7 -
+		FIVE_H_NUDGE * gate * (1 - left5 / WINDOW_5H)
+	);
+};
+
 /**
  * Put the account a human should try first at the top without changing the
  * automatic picker. Stable ties retain the store order.
@@ -191,6 +239,7 @@ export function sortAccountsForDisplay(
 			index,
 			group,
 			pct5: pct5 ?? Number.POSITIVE_INFINITY,
+			pct7: pct7 ?? Number.POSITIVE_INFINITY,
 			reset5: resetAt(usage?.five_hour?.resets_at),
 			reset7: resetAt(usage?.seven_day?.resets_at),
 		};
@@ -198,11 +247,14 @@ export function sortAccountsForDisplay(
 	return ranked
 		.sort((a, b) => {
 			if (a.group !== b.group) return a.group - b.group;
-			// Weekly quota is the perishable one: spend the account whose 7d window
-			// resets soonest, since anything left on it evaporates. 5h usage only
-			// breaks ties. (An unknown reset sorts last: no data, no urgency.)
-			if (a.group === 0)
-				return a.reset7 - b.reset7 || a.pct5 - b.pct5 || a.index - b.index;
+			if (a.group === 0) {
+				// Compared, not subtracted: two unknown resets are both +Infinity and
+				// Infinity - Infinity is NaN, which corrupts the whole sort.
+				const ra = readyRank(a, now);
+				const rb = readyRank(b, now);
+				if (ra !== rb) return ra - rb;
+				return a.pct5 - b.pct5 || a.index - b.index;
+			}
 			if (a.group === 1) return a.reset5 - b.reset5 || a.index - b.index;
 			return a.index - b.index;
 		})
