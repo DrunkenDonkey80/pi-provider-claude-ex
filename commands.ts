@@ -18,7 +18,11 @@ import {
 	pickActive,
 	setActive,
 } from "./pool.ts";
-import { accountLine, resolveAccount } from "./format.ts";
+import {
+	accountLine,
+	resolveAccount,
+	sortAccountsForDisplay,
+} from "./format.ts";
 import { collectUsage, readUsage } from "./usage.ts";
 import { type Profile, fetchProfile } from "./oauth.ts";
 
@@ -242,8 +246,8 @@ export function setupCommands(pi: ExtensionAPI): void {
 	const register = pi.registerCommand as unknown as Register;
 
 	register("claude-pool", {
-		description: "Claude accounts: quota status, switch active account",
-		handler: async (args, ctx) => {
+		description: "Open the Claude account pool",
+		handler: async (_args, ctx) => {
 			const store = readStore();
 			if (!store.accounts.length) {
 				ctx.ui.notify(
@@ -252,26 +256,8 @@ export function setupCommands(pi: ExtensionAPI): void {
 				);
 				return;
 			}
-			// An explicit target skips the menu: /claude-pool 2, /claude-pool work
-			if (args.trim()) {
-				const target = resolveAccount(store.accounts, args);
-				if (!target) {
-					ctx.ui.notify(`No account matches "${args.trim()}".`, "warning");
-					return;
-				}
-				await setActive(target.label);
-				ctx.ui.notify(
-					await switchReport(target.label),
-					target.dead ? "warning" : "info",
-				);
-				return;
-			}
-
 			if (!ctx.ui.custom) {
-				ctx.ui.notify(
-					"Interactive menu needs a TUI — use /claude-pool <n|label> or cpool.",
-					"warning",
-				);
+				ctx.ui.notify("Interactive menu needs a TUI — use cpool.", "warning");
 				return;
 			}
 			// Dynamic: cpool and tests load this module without pi's node_modules.
@@ -289,14 +275,15 @@ export function setupCommands(pi: ExtensionAPI): void {
 				if (!fresh.accounts.length) return;
 				const cache = readUsage();
 				const active = pickActive(fresh);
+				const visible = sortAccountsForDisplay(fresh.accounts, cache);
 				const pick = await ctx.ui.custom<MenuAction | null>(
 					(tui, theme, _kb, done) => {
 						const list = new SelectList(
-							fresh.accounts.map((a, i) => ({
+							visible.map((a, i) => ({
 								value: a.label,
 								label: accountLine(a, i, cache[a.label], a.label === active),
 							})),
-							Math.min(fresh.accounts.length, 12),
+							Math.min(visible.length, 12),
 							{
 								selectedPrefix: (t: string) => theme.fg("accent", t),
 								selectedText: (t: string) => theme.fg("accent", t),
@@ -389,11 +376,11 @@ export function setupCommands(pi: ExtensionAPI): void {
 
 	register("claude-pool-remove", {
 		description:
-			"Remove an account from the pool. Usage: /claude-pool-remove <n|label>",
+			"Remove an account from the pool. Usage: /claude-pool-remove <label>",
 		handler: async (args, ctx) => {
 			const target = resolveAccount(readStore().accounts, args);
 			if (!target) {
-				ctx.ui.notify("Usage: /claude-pool-remove <n|label>", "warning");
+				ctx.ui.notify("Usage: /claude-pool-remove <label>", "warning");
 				return;
 			}
 			await removeFromPool(target.label);
@@ -465,11 +452,11 @@ export function setupCommands(pi: ExtensionAPI): void {
 
 	register("claude-pool-disable", {
 		description:
-			"Hold an account out of rotation (toggle). Usage: /claude-pool-disable <n|label>",
+			"Hold an account out of rotation (toggle). Usage: /claude-pool-disable <label>",
 		handler: async (args, ctx) => {
 			const target = resolveAccount(readStore().accounts, args);
 			if (!target) {
-				ctx.ui.notify("Usage: /claude-pool-disable <n|label>", "warning");
+				ctx.ui.notify("Usage: /claude-pool-disable <label>", "warning");
 				return;
 			}
 			const next = await toggleDisabled(target.label);

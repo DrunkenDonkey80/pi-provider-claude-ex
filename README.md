@@ -42,10 +42,9 @@ generation — which is what actually keeps a login alive.
 
 ```
 /claude-pool                 list accounts with quota → pick one to switch to
-/claude-pool <n|label>       switch directly
 /claude-pool-add <label>     snapshot the current /login anthropic account
-/claude-pool-remove <n|label>
-/claude-pool-disable <n|label>   hold out of / return to rotation (toggle)
+/claude-pool-remove <label>
+/claude-pool-disable <label>     hold out of / return to rotation (toggle)
 /claude-pool-export          write the logins to a portable file + clipboard
 /claude-pool-import [path|json]  load them on another machine
 ```
@@ -95,6 +94,12 @@ In the `/claude-pool` list, keys act on the hovered row: `enter` switch,
 `r` refresh usage, `d` enable/disable, `-` remove, `esc` close. Refresh, toggle
 and remove re-present the updated list instead of closing it.
 
+The display is sorted for human scanning, independently of the automatic picker:
+usable accounts first by lowest 5h usage then soonest 7d reset; next, 5h-full
+accounts with under 90% weekly usage by soonest 5h reset; then other healthy,
+cooling, and dead/disabled accounts. Row numbers are rankings only, never command
+targets — commands accept labels or unique substrings.
+
 ### Moving accounts to another computer
 
 `/claude-pool-export` writes `~/.pi/agent/claude-pool-export.json` (path shown,
@@ -119,11 +124,10 @@ running sessions within ~2s, no restart.
 
 ```bash
 cpool list [--json]        # accounts with 5h / weekly quota
-cpool switch 2             # pin account 2 (bare `switch` rotates)
-cpool switch datecs:work   # by label or unique substring
+cpool switch datecs:work   # label/unique substring (bare `switch` rotates)
 cpool add work             # snapshot auth.json's /login account
-cpool disable 3            # toggle out of rotation
-cpool refresh [n|label]    # force a token refresh
+cpool disable datecs:work  # toggle out of rotation
+cpool refresh [label]      # force a token refresh
 cpool daemon [--once]      # single-writer keep-alive + usage sweep
 ```
 

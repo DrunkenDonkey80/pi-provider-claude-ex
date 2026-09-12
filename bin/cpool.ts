@@ -8,12 +8,12 @@
  *
  *   cpool list [--json]          accounts with 5h / weekly quota
  *   cpool status                 alias of list
- *   cpool switch <n|label>       pin the active account
+ *   cpool switch <label>         pin the active account
  *   cpool switch                 rotate to the next usable account
  *   cpool add <label>            snapshot auth.json's /login account
- *   cpool remove <n|label>
- *   cpool disable <n|label>      toggle out of / into rotation
- *   cpool refresh [n|label]      force a token refresh (all, or one)
+ *   cpool remove <label>
+ *   cpool disable <label>        toggle out of / into rotation
+ *   cpool refresh [label]        force a token refresh (all, or one)
  *   cpool daemon [--once]        single-writer keep-alive + usage sweep
  */
 
@@ -30,7 +30,12 @@ import {
 	usable,
 } from "../pool.ts";
 import { collectUsage, readUsage } from "../usage.ts";
-import { accountState, poolTable, relative, resolveAccount } from "../format.ts";
+import {
+	accountState,
+	poolTable,
+	relative,
+	resolveAccount,
+} from "../format.ts";
 import { attachCurrentLogin, toggleDisabled } from "../commands.ts";
 
 const args = process.argv.slice(2);
@@ -148,7 +153,7 @@ switch (command) {
 
 	case "remove": {
 		const pick = resolveAccount(readStore().accounts, target);
-		if (!pick) die("usage: cpool remove <n|label>");
+		if (!pick) die("usage: cpool remove <label>");
 		await mutateStore((store) => {
 			store.accounts = store.accounts.filter((a) => a.label !== pick!.label);
 			if (store.active === pick!.label) store.active = pickActive(store);
@@ -160,7 +165,7 @@ switch (command) {
 	case "disable":
 	case "enable": {
 		const pick = resolveAccount(readStore().accounts, target);
-		if (!pick) die(`usage: cpool ${command} <n|label>`);
+		if (!pick) die(`usage: cpool ${command} <label>`);
 		const disabled = await toggleDisabled(pick!.label);
 		console.log(`"${pick!.label}" is now ${disabled ? "disabled" : "enabled"}`);
 		break;
@@ -169,7 +174,10 @@ switch (command) {
 	case "refresh": {
 		const store = readStore();
 		const picks = target
-			? [resolveAccount(store.accounts, target) ?? die(`no account matches "${target}"`)]
+			? [
+					resolveAccount(store.accounts, target) ??
+						die(`no account matches "${target}"`),
+				]
 			: store.accounts;
 		for (const account of picks) {
 			const next = await ensureFresh(account.label, { force: true });
@@ -197,11 +205,11 @@ switch (command) {
 		console.log(
 			[
 				"cpool list [--json]        accounts with 5h / weekly quota",
-				"cpool switch [n|label]     pin active account (bare = rotate)",
+				"cpool switch [label]       pin active account (bare = rotate)",
 				"cpool add <label>          snapshot auth.json's /login account",
-				"cpool remove <n|label>",
-				"cpool disable <n|label>    toggle out of / into rotation",
-				"cpool refresh [n|label]    force a token refresh",
+				"cpool remove <label>",
+				"cpool disable <label>      toggle out of / into rotation",
+				"cpool refresh [label]      force a token refresh",
 				"cpool daemon [--once]      keep-alive + usage sweep",
 			].join("\n"),
 		);

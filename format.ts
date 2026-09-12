@@ -147,6 +147,65 @@ export function accountLine(
 	return parts.join(" · ");
 }
 
+const resetAt = (iso: string | undefined): number => {
+	const at = iso ? Date.parse(iso) : Number.NaN;
+	return Number.isFinite(at) ? at : Number.POSITIVE_INFINITY;
+};
+
+/**
+ * Put the account a human should try first at the top without changing the
+ * automatic picker. Stable ties retain the store order.
+ */
+export function sortAccountsForDisplay(
+	accounts: Account[],
+	cache: UsageCache,
+	now = Date.now(),
+): Account[] {
+	const ranked = accounts.map((account, index) => {
+		const usage = cache[account.label];
+		const pct5 = usage?.five_hour?.pct;
+		const pct7 = usage?.seven_day?.pct;
+		const healthy = accountState(account, now) === "ok";
+		const enabled = !account.dead && !account.disabled;
+		const ready =
+			healthy &&
+			typeof pct5 === "number" &&
+			pct5 < 99 &&
+			typeof pct7 === "number" &&
+			pct7 < 99;
+		// A quota-full account is normally cooling until this very reset, so cooling
+		// must not disqualify it from the "ready soon" tier. Dead/disabled still do.
+		const usefulAfter5hReset =
+			enabled &&
+			typeof pct5 === "number" &&
+			pct5 >= 99 &&
+			typeof pct7 === "number" &&
+			pct7 < 90;
+		let group = 4; // dead or disabled
+		if (ready) group = 0;
+		else if (usefulAfter5hReset) group = 1;
+		else if (healthy) group = 2;
+		else if (enabled) group = 3; // cooling for another reason
+		return {
+			account,
+			index,
+			group,
+			pct5: pct5 ?? Number.POSITIVE_INFINITY,
+			reset5: resetAt(usage?.five_hour?.resets_at),
+			reset7: resetAt(usage?.seven_day?.resets_at),
+		};
+	});
+	return ranked
+		.sort((a, b) => {
+			if (a.group !== b.group) return a.group - b.group;
+			if (a.group === 0)
+				return a.pct5 - b.pct5 || a.reset7 - b.reset7 || a.index - b.index;
+			if (a.group === 1) return a.reset5 - b.reset5 || a.index - b.index;
+			return a.index - b.index;
+		})
+		.map(({ account }) => account);
+}
+
 export function poolTable(
 	accounts: Account[],
 	activeLabel: string | undefined,
@@ -154,21 +213,18 @@ export function poolTable(
 ): string {
 	if (!accounts.length)
 		return "(no accounts — /claude-pool-add <label> after /login anthropic)";
-	return accounts
+	return sortAccountsForDisplay(accounts, cache)
 		.map((a, i) => accountLine(a, i, cache[a.label], a.label === activeLabel))
 		.join("\n");
 }
 
-/** Resolve "2", "datecs:home", or a unique substring to a label. */
+/** Resolve an exact label or unique substring. Display numbers are not IDs. */
 export function resolveAccount(
 	accounts: Account[],
 	query: string,
 ): Account | undefined {
 	const q = query.trim();
 	if (!q) return undefined;
-	const n = Number(q);
-	if (Number.isInteger(n) && n >= 1 && n <= accounts.length)
-		return accounts[n - 1];
 	const exact = accounts.find((a) => a.label === q);
 	if (exact) return exact;
 	const hits = accounts.filter((a) =>

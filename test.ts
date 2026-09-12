@@ -358,21 +358,75 @@ await check(
 	},
 );
 
-// 7. Target resolution used by both the slash command and the CLI.
-await check(
-	"resolveAccount takes index, exact label and unique substring",
-	() => {
-		const accounts = [acct("datecs:home"), acct("datecs:work")] as never;
-		assert.equal(format.resolveAccount(accounts, "1")?.label, "datecs:home");
-		assert.equal(
-			format.resolveAccount(accounts, "datecs:work")?.label,
-			"datecs:work",
-		);
-		assert.equal(format.resolveAccount(accounts, "HOME")?.label, "datecs:home");
-		assert.equal(format.resolveAccount(accounts, "datecs"), undefined); // ambiguous
-		assert.equal(format.resolveAccount(accounts, "9"), undefined);
-	},
-);
+// 7. Display numbers are rankings, not stable IDs: commands accept only an
+//    exact label or a unique substring.
+await check("resolveAccount rejects numbers; takes label or substring", () => {
+	const accounts = [acct("datecs:home"), acct("datecs:work")] as never;
+	assert.equal(format.resolveAccount(accounts, "1"), undefined);
+	assert.equal(
+		format.resolveAccount(accounts, "datecs:work")?.label,
+		"datecs:work",
+	);
+	assert.equal(format.resolveAccount(accounts, "HOME")?.label, "datecs:home");
+	assert.equal(format.resolveAccount(accounts, "datecs"), undefined); // ambiguous
+	assert.equal(format.resolveAccount(accounts, "9"), undefined);
+});
+
+await check("display sorts ready accounts first, then useful 5h resets", () => {
+	const now = Date.parse("2026-01-01T00:00:00Z");
+	const in_ = (ms: number) => new Date(now + ms).toISOString();
+	const HOUR = 3_600_000;
+	const DAY = 24 * HOUR;
+	const accounts = [
+		acct("dead", { dead: true }),
+		acct("full-late", { cooldownUntil: now + 3 * HOUR }),
+		acct("ready-high"),
+		acct("weekly-nearly-full", { cooldownUntil: now + HOUR }),
+		acct("ready-early7"),
+		acct("full-soon", { cooldownUntil: now + HOUR }),
+		acct("ready-late7"),
+		acct("unknown"),
+	] as never;
+	const cache = {
+		"full-late": {
+			five_hour: { pct: 100, resets_at: in_(3 * HOUR) },
+			seven_day: { pct: 40, resets_at: in_(2 * DAY) },
+		},
+		"ready-high": {
+			five_hour: { pct: 30, resets_at: in_(3 * HOUR) },
+			seven_day: { pct: 20, resets_at: in_(2 * DAY) },
+		},
+		"weekly-nearly-full": {
+			five_hour: { pct: 100, resets_at: in_(HOUR) },
+			seven_day: { pct: 95, resets_at: in_(DAY) },
+		},
+		"ready-early7": {
+			five_hour: { pct: 10, resets_at: in_(3 * HOUR) },
+			seven_day: { pct: 20, resets_at: in_(DAY) },
+		},
+		"full-soon": {
+			five_hour: { pct: 100, resets_at: in_(HOUR) },
+			seven_day: { pct: 40, resets_at: in_(2 * DAY) },
+		},
+		"ready-late7": {
+			five_hour: { pct: 10, resets_at: in_(3 * HOUR) },
+			seven_day: { pct: 20, resets_at: in_(3 * DAY) },
+		},
+	} as never;
+	assert.deepEqual(
+		format.sortAccountsForDisplay(accounts, cache, now).map((a) => a.label),
+		[
+			"ready-early7",
+			"ready-late7",
+			"ready-high",
+			"full-soon",
+			"full-late",
+			"unknown",
+			"weekly-nearly-full",
+			"dead",
+		],
+	);
+});
 
 // 7b. One email, several subscriptions: a personal Pro org and a team seat
 //     share an email but bill and rate-limit separately. Matching on email
