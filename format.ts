@@ -16,6 +16,17 @@ export function relative(ms: number): string {
 const HOUR = 3_600_000;
 const DAY = 24 * HOUR;
 
+/** Fixed-width reset clock: align each number at its unit, not the whole text. */
+function clockRelative(ms: number): string {
+	const s = Math.max(0, Math.round(ms / 1000));
+	if (s < 90) return `${String(s).padStart(2)}s    `;
+	const m = Math.round(s / 60);
+	if (m < 90) return `${String(m).padStart(2)}m    `;
+	const h = Math.floor(m / 60);
+	if (h < 36) return `${String(h).padStart(2)}h ${String(m % 60).padStart(2)}m`;
+	return `${String(Math.floor(h / 24)).padStart(2)}d ${String(h % 24).padStart(2)}h`;
+}
+
 const yellow = (s: string) => `\x1b[33m${s}\x1b[0m`;
 const red = (s: string) => `\x1b[31m${s}\x1b[0m`;
 
@@ -51,9 +62,10 @@ function clockColor(
  * Every field is padded to a fixed width so the columns line up down the list.
  * Padding happens BEFORE colouring — ANSI escapes count as characters to
  * padStart/padEnd, so a coloured cell padded afterwards comes out short.
- * Widest clock is "6d 19h"/"4h 15m" (6), widest percent is "100" (3).
+ * Clock numbers are independently right-aligned: " 5h  3m" / "12h  3m" and
+ * " 2d  1h" / " 2d 16h". Widest percent is "100" (3).
  */
-const CLOCK_W = 6;
+const CLOCK_W = 7;
 const PCT_W = 3;
 const BLANK_CLOCK = " ".repeat(CLOCK_W + 2); // the "(" and ")" too
 
@@ -77,7 +89,7 @@ function window(
 				pct,
 				redAt,
 				yellowAt,
-				`(${relative(at - Date.now()).padStart(CLOCK_W)})`,
+				`(${clockRelative(at - Date.now())})`,
 			)
 		: BLANK_CLOCK;
 	return `${name}${clock} ${quotaColor(pct, `[${bar}] ${String(pct).padStart(PCT_W)}%`)}`;

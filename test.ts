@@ -464,6 +464,25 @@ await check("quota columns are fixed width", () => {
 	const atLabel = rows.map((r) => r.indexOf("· x"));
 	assert.equal(new Set(at7d).size, 1, `7d column ragged: ${at7d}`);
 	assert.equal(new Set(atLabel).size, 1, `label column ragged: ${atLabel}`);
+
+	const clockText = (ms: number): string => {
+		const row = plain(
+			format.accountLine(
+				acct("x"),
+				0,
+				{
+					at: Date.now(),
+					five_hour: { pct: 10, resets_at: iso(ms) },
+				} as never,
+				false,
+			),
+		);
+		return row.match(/5h\(([^)]*)\)/)?.[1] ?? "";
+	};
+	assert.equal(clockText(5 * 3_600_000), " 5h  0m");
+	assert.equal(clockText(12 * 3_600_000), "12h  0m");
+	assert.equal(clockText(49 * 3_600_000), " 2d  1h");
+	assert.equal(clockText(64 * 3_600_000), " 2d 16h");
 });
 
 // The reset clock warns on time; the bar warns on quota. A window that is
