@@ -43,7 +43,6 @@ generation — which is what actually keeps a login alive.
 ```
 /claude-pool                 list accounts with quota → pick one to switch to
 /claude-pool <n|label>       switch directly
-/claude-pool-status          same list as text
 /claude-pool-add <label>     snapshot the current /login anthropic account
 /claude-pool-remove <n|label>
 /claude-pool-disable <n|label>   hold out of / return to rotation (toggle)

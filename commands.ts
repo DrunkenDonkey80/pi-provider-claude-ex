@@ -13,13 +13,12 @@ import {
 	writeJsonAtomic,
 } from "./store.ts";
 import {
-	activeAccount,
 	ensureFresh,
 	invalidateSnapshot,
 	pickActive,
 	setActive,
 } from "./pool.ts";
-import { accountLine, poolTable, resolveAccount } from "./format.ts";
+import { accountLine, resolveAccount } from "./format.ts";
 import { collectUsage, readUsage } from "./usage.ts";
 import { type Profile, fetchProfile } from "./oauth.ts";
 
@@ -205,17 +204,19 @@ function copyToClipboard(text: string): boolean {
 	}
 }
 
-/** Top up the usage cache for the accounts shown in an interactive list. */
-async function refreshVisibleUsage(force: boolean): Promise<void> {
+/**
+ * Top up the usage cache for every live account. Only ever user-initiated (`r`
+ * in the pool list), so it covers the whole (small) pool — the 180s cache floor
+ * still protects the endpoint's hourly budget.
+ */
+async function refreshVisibleUsage(): Promise<void> {
 	const labels = readStore()
 		.accounts.filter((a) => !a.dead)
 		.map((a) => a.label);
-	// force=true is a user-initiated refresh: allow the whole (small) pool, but
-	// the 180s cache floor still protects the endpoint's hourly budget.
 	await collectUsage(
 		labels,
 		async (label) => (await ensureFresh(label))?.access,
-		{ max: force ? labels.length : 2, force: false },
+		{ max: labels.length, force: false },
 	);
 }
 
@@ -335,7 +336,7 @@ export function setupCommands(pi: ExtensionAPI): void {
 					);
 					return;
 				}
-				if (pick.act === "refresh") await refreshVisibleUsage(true);
+				if (pick.act === "refresh") await refreshVisibleUsage();
 				else if (pick.act === "toggle") await toggleDisabled(pick.label);
 				else if (
 					!ctx.ui.confirm ||
@@ -343,18 +344,6 @@ export function setupCommands(pi: ExtensionAPI): void {
 				)
 					await removeFromPool(pick.label);
 			}
-		},
-	});
-
-	register("claude-pool-status", {
-		description: "Show Claude pool accounts with 5h / weekly quota",
-		handler: async (_args, ctx) => {
-			await refreshVisibleUsage(false);
-			const store = readStore();
-			ctx.ui.notify(
-				`Claude pool (enabled=${store.enabled !== false}, active=${activeAccount()?.label ?? "none"}):\n${poolTable(store.accounts, pickActive(store), readUsage())}`,
-				"info",
-			);
 		},
 	});
 
