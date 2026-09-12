@@ -156,7 +156,7 @@ const resetAt = (iso: string | undefined): number => {
 
 const WINDOW_5H = 5 * HOUR;
 /** What an entirely unused week is worth, expressed as time-to-reset. */
-const WEEKLY_QUOTA_WEIGHT = 3 * DAY;
+const WEEKLY_QUOTA_WEIGHT = 4.4 * DAY;
 /** What an about-to-reset 5h window is worth, same units. */
 const FIVE_H_NUDGE = 2 * DAY;
 
@@ -171,14 +171,21 @@ const FIVE_H_NUDGE = 2 * DAY;
  * on. Unused quota then pulls an account earlier, because a week that is 20%
  * spent has more going to waste than one that is 80% spent.
  *
- * The weight on unused quota is what took tuning. Charging a full week (the
- * natural "slack" formulation, quota_left - time_left/7d) makes idleness
- * dominate: an account resetting in SIX days at 13% used outranked accounts
- * with half the time left, which is wrong — six days is plenty of runway to
- * spend it later. Three days keeps it a strong modifier that can reorder
- * accounts within a day or two of each other, without letting a far-off reset
- * reach the top on idleness alone. Raise it toward 7d to favour draining
- * under-used accounts; lower it toward 1d to rank almost purely by deadline.
+ * The weight on unused quota is what took tuning, and two real orderings pin it
+ * from both sides (both are tests):
+ *
+ *   3d15h out at 26% used must beat peers 2d out at 60-66%: 40 points of
+ *   unspent week outweighs a day of deadline            ->  k > 4.32d
+ *
+ *   2d10h out at 53% must beat 3d20h out at 23%: there the deadline gap is
+ *   wide enough to win                                  ->  k < 4.50d
+ *
+ * 4.4d sits between them. Charging a full week (the natural "slack"
+ * formulation, quota_left - time_left/7d) lets idleness dominate outright: an
+ * account resetting in SIX days at 13% used outranked accounts with half the
+ * time left, and six days is ample runway to spend it later. Raise k toward 7d
+ * to favour draining under-used accounts, lower it toward 1d to rank almost
+ * purely by deadline — but the window above is narrow, so re-run both tests.
  *
  * A 5h window about to roll over is free capacity: drain it now and a fresh one
  * opens immediately. So among accounts close on the week, the one whose 5h

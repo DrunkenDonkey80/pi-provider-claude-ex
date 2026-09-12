@@ -595,6 +595,43 @@ await check("weekly deadline leads, unused quota reorders near ties", () => {
 	);
 });
 
+// The other side of the same knob. Here the deadline gap is only ~1.5 days but
+// the usage gap is 34-40 points, so the idle account wins: 3d15h at 26% used
+// has far more going to waste than 2d out at 60-66%. Together with the test
+// above this pins WEEKLY_QUOTA_WEIGHT to a narrow band (4.32d < k < 4.50d) —
+// if one of these flips, the constant moved.
+await check("a much idler account outranks a nearer deadline", () => {
+	const now = Date.parse("2026-01-01T00:00:00Z");
+	const HOUR = 3_600_000;
+	const DAY = 24 * HOUR;
+	const MIN = 60_000;
+	const at = (ms: number) => new Date(now + ms).toISOString();
+	// label, 7d left, 7d pct, 5h pct, 5h left (undefined = window not started)
+	const rows: [string, number, number, number, number | undefined][] = [
+		["home", 2 * DAY + 5 * HOUR, 60, 45, 4 * HOUR + 52 * MIN],
+		["flex1", 2 * DAY + 3 * HOUR, 66, 0, undefined],
+		["dobrin", 3 * DAY + 15 * HOUR, 26, 0, undefined],
+		["flex2", 3 * DAY + 8 * HOUR, 74, 0, undefined],
+	];
+	const accounts = rows.map(([label]) => acct(label)) as never;
+	const cache = Object.fromEntries(
+		rows.map(([label, left7, pct7, pct5, left5]) => [
+			label,
+			{
+				five_hour: {
+					pct: pct5,
+					resets_at: left5 === undefined ? undefined : at(left5),
+				},
+				seven_day: { pct: pct7, resets_at: at(left7) },
+			},
+		]),
+	) as never;
+	assert.deepEqual(
+		format.sortAccountsForDisplay(accounts, cache, now).map((a) => a.label),
+		["dobrin", "home", "flex1", "flex2"],
+	);
+});
+
 // A host that relaunches every saved session at once starts N sweeps in the
 // same instant. They all read the same cache snapshot and all see the label as
 // due, so without claiming the slot under the lock every one of them spends a
