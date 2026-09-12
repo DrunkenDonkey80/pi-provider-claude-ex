@@ -7,7 +7,9 @@ export function relative(ms: number): string {
 	const s = Math.max(0, Math.round(ms / 1000));
 	if (s < 90) return `${s}s`;
 	const m = Math.round(s / 60);
-	if (m < 90) return `${m}m`;
+	// Switch to hours at 60, not 90: "71m" next to a sibling's "4h 51m" reads as
+	// a different unit at a glance, and can't align under a fixed-width clock.
+	if (m < 60) return `${m}m`;
 	const h = Math.floor(m / 60);
 	if (h < 36) return `${h}h ${m % 60}m`;
 	return `${Math.floor(h / 24)}d ${h % 24}h`;
@@ -21,7 +23,7 @@ function clockRelative(ms: number): string {
 	const s = Math.max(0, Math.round(ms / 1000));
 	if (s < 90) return `${String(s).padStart(2)}s    `;
 	const m = Math.round(s / 60);
-	if (m < 90) return `${String(m).padStart(2)}m    `;
+	if (m < 60) return `${String(m).padStart(2)}m    `;
 	const h = Math.floor(m / 60);
 	if (h < 36) return `${String(h).padStart(2)}h ${String(m % 60).padStart(2)}m`;
 	return `${String(Math.floor(h / 24)).padStart(2)}d ${String(h % 24).padStart(2)}h`;

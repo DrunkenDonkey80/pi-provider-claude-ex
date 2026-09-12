@@ -725,6 +725,10 @@ await check("quota columns are fixed width", () => {
 	assert.equal(clockText(5 * 3_600_000), " 5h  0m");
 	assert.equal(clockText(12 * 3_600_000), "12h  0m");
 	assert.equal(clockText(49 * 3_600_000), " 2d  1h");
+	// Anything past the hour reads as hours. "71m" beside a sibling's "4h 51m"
+	// looks like a different unit and can't align in a fixed-width column.
+	assert.equal(clockText(71 * 60_000), " 1h 11m");
+	assert.equal(clockText(59 * 60_000), "59m    ");
 	assert.equal(clockText(64 * 3_600_000), " 2d 16h");
 });
 
