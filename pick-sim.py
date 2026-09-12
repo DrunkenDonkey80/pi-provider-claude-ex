@@ -72,17 +72,26 @@ def pick_headroom(accounts, t):
     return max(accounts, key=lambda a: 100 - max(a.view(t)["pct5"], a.view(t)["pct7"]))
 
 
-def slack_picker(A, B):
+def slack_picker(A, B, C=0.0, clamp5=False):
+    """score = A*slack_7d + B*slack_5h + C*free_5h.
+
+    clamp5 floors the 5h slack at 0, so a drained 5h window cannot drag an
+    account down: being out of 5h quota is temporary (the pool benches such an
+    account separately), while unspent weekly quota is gone for good. C then
+    restores the "can it serve right now" signal that the clamp removes.
+    """
+
     def pick(accounts, t):
         def score(a):
             v = a.view(t)
             slack7 = (1 - v["pct7"] / 100) - v["t7"] / W7
             slack5 = (1 - v["pct5"] / 100) - v["t5"] / W5
-            return A * slack7 + B * slack5
+            free5 = 1 - v["pct5"] / 100
+            return A * slack7 + B * (max(0.0, slack5) if clamp5 else slack5) + C * free5
 
         return max(accounts, key=score)
 
-    pick.__name__ = f"slack(A={A},B={B})"
+    pick.__name__ = f"slack(A={A},B={B},C={C},clamp={clamp5})"
     return pick
 
 
@@ -162,6 +171,10 @@ if __name__ == "__main__":
         ("slack A=2 B=1", slack_picker(2.0, 1.0)),
         ("slack A=3 B=1", slack_picker(3.0, 1.0)),
         ("slack A=1 B=2", slack_picker(1.0, 2.0)),
+        # shipped: clamped 5h slack + a capped "can it serve now" term
+        ("SHIPPED 1,2,.5 clamp", slack_picker(1.0, 2.0, 0.5, clamp5=True)),
+        ("clamp, no capacity", slack_picker(1.0, 2.0, 0.0, clamp5=True)),
+        ("clamp, capacity 1.0", slack_picker(1.0, 2.0, 1.0, clamp5=True)),
         ("slack A=1 B=3", slack_picker(1.0, 3.0)),
         ("slack A=4 B=1", slack_picker(4.0, 1.0)),
     ]

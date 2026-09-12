@@ -430,13 +430,90 @@ await check("accountLine shows state and quota", () => {
 		},
 		true,
 	);
-	assert.match(line, /▸ 1\. x/);
-	assert.match(line, /5h \[███░░░░░\] 34%/);
-	assert.match(line, /7d \[██████░░\] 71%/);
-	assert.ok(line.includes("\u001b[33m"), "71% window should be yellow");
+	// quota columns first, ragged label last
+	assert.match(line, /^▸ 1\. · 5h/);
+	assert.match(line, /· x$/);
+	// fields are padded to a fixed width, so the gaps vary
+	assert.match(line, /5h\s+\[███░░░░░\]\s+34%/);
+	// the bar carries its own colour now, so the escape sits before "["
+	assert.match(line, /7d\s+\u001b\[33m\[██████░░\]\s+71%/);
 	assert.match(line, /Fable 12%/);
 	assert.match(line, /cooling/);
 	assert.match(line, /login ok to 2026-11-04/);
+});
+
+// Columns must line up down the list whatever the clock and percent widths
+// are: "45m" vs "6d 19h", "7%" vs "100%", and a window with no data at all.
+await check("quota columns are fixed width", () => {
+	const iso = (ms: number) => new Date(Date.now() + ms).toISOString();
+	const plain = (s: string) => s.replace(/\u001b\[\d+m/g, "");
+	const rows = [
+		{
+			at: Date.now(),
+			five_hour: { pct: 7, resets_at: iso(45 * 60_000) },
+			seven_day: { pct: 100, resets_at: iso(6.8 * 86_400_000) },
+		},
+		{
+			at: Date.now(),
+			five_hour: { pct: 100, resets_at: iso(4.25 * 3_600_000) },
+			seven_day: { pct: 7, resets_at: iso(12 * 3_600_000) },
+		},
+		{ at: Date.now() }, // no windows at all
+	].map((e, i) => plain(format.accountLine(acct("x"), i, e as never, false)));
+	const at7d = rows.map((r) => r.indexOf("7d"));
+	const atLabel = rows.map((r) => r.indexOf("· x"));
+	assert.equal(new Set(at7d).size, 1, `7d column ragged: ${at7d}`);
+	assert.equal(new Set(atLabel).size, 1, `label column ragged: ${atLabel}`);
+});
+
+// The reset clock warns on time; the bar warns on quota. A window that is
+// already spent gets no clock warning — an imminent reset is good news there.
+await check("the reset clock colours by urgency, unless drained", () => {
+	const iso = (ms: number) => new Date(Date.now() + ms).toISOString();
+	const clock = (
+		w: "five_hour" | "seven_day",
+		pct: number,
+		in_: number,
+	): string => {
+		const line = format.accountLine(
+			acct("x"),
+			0,
+			{
+				at: Date.now(),
+				[w]: { pct, resets_at: iso(in_) },
+			} as never,
+			false,
+		);
+		return line.slice(line.indexOf(w === "five_hour" ? "5h" : "7d"));
+	};
+	const HOUR = 3_600_000;
+	const DAY = 24 * HOUR;
+	const red = "\u001b[31m(";
+	const amber = "\u001b[33m(";
+
+	// 5h: red under an hour, yellow under two, plain beyond
+	assert.ok(clock("five_hour", 10, 30 * 60_000).includes(red), "30m → red");
+	assert.ok(clock("five_hour", 10, 90 * 60_000).includes(amber), "90m → yellow");
+	assert.ok(
+		!clock("five_hour", 10, 4 * HOUR).includes("\u001b[3"),
+		"4h → no clock colour",
+	);
+	// 7d: red under a day, yellow under two
+	assert.ok(clock("seven_day", 10, 12 * HOUR).includes(red), "12h → red");
+	assert.ok(clock("seven_day", 10, 36 * HOUR).includes(amber), "36h → yellow");
+	assert.ok(
+		!clock("seven_day", 10, 5 * DAY).includes("\u001b[3"),
+		"5d → no clock colour",
+	);
+	// drained (>=80%) → the clock stays plain however close the reset is
+	assert.ok(
+		!clock("five_hour", 80, 5 * 60_000).startsWith("5h\u001b[3"),
+		"drained 5h → plain clock",
+	);
+	assert.ok(
+		!clock("seven_day", 95, 60 * 60_000).startsWith("7d\u001b[3"),
+		"drained 7d → plain clock",
+	);
 });
 
 // 7b. The public quota() accessor other extensions call.

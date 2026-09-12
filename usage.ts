@@ -83,6 +83,18 @@ function resetsIn(
  * gets held back. Weights tuned in pick-sim.py (7d:5h = 1:2 — a plateau across
  * 0.5-1.5, not a peak, so don't over-tune). An unknown account scores 0:
  * neutral, behind any account with a proven surplus.
+ *
+ * Three terms, because "“should I use this account" is three questions:
+ *
+ *   slack_7d          strategic: is this week's quota going to waste?
+ *   2 * max(0, s_5h)  opportunistic: a 5h window about to reset with quota on
+ *                     it — a bonus only. Drained is a TEMPORARY state that
+ *                     `parkFull` already benches, so it must not go negative:
+ *                     it buried 100%-of-5h-but-13%-of-the-week-left-with-2-days
+ *                     at -1.12, behind accounts with nothing left to spend.
+ *   0.5 * free_5h     practical: can it actually serve right now, or does it
+ *                     stall in ten minutes? Capped well under the weekly term,
+ *                     so it breaks ties instead of driving the choice.
  */
 export function switchScore(
 	entry: UsageEntry | undefined,
@@ -92,7 +104,13 @@ export function switchScore(
 		typeof w?.pct === "number"
 			? 1 - w.pct / 100 - resetsIn(w, windowMs, now) / windowMs
 			: 0;
-	return slack(entry?.seven_day, W7_MS) + 2 * slack(entry?.five_hour, W5_MS);
+	const free5h =
+		typeof entry?.five_hour?.pct === "number" ? 1 - entry.five_hour.pct / 100 : 0;
+	return (
+		slack(entry?.seven_day, W7_MS) +
+		2 * Math.max(0, slack(entry?.five_hour, W5_MS)) +
+		0.5 * free5h
+	);
 }
 
 /**

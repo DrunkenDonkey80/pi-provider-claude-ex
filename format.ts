@@ -13,30 +13,74 @@ export function relative(ms: number): string {
 	return `${Math.floor(h / 24)}d ${h % 24}h`;
 }
 
-function resetsIn(iso: string | undefined): string {
-	if (!iso) return "";
-	const at = Date.parse(iso);
-	if (!Number.isFinite(at)) return "";
-	return `(${relative(at - Date.now())})`;
-}
+const HOUR = 3_600_000;
+const DAY = 24 * HOUR;
+
+const yellow = (s: string) => `\x1b[33m${s}\x1b[0m`;
+const red = (s: string) => `\x1b[31m${s}\x1b[0m`;
 
 /** Yellow past half the window, red past three quarters. */
 function quotaColor(pct: number, s: string): string {
-	if (pct > 75) return `\x1b[31m${s}\x1b[0m`;
-	if (pct > 50) return `\x1b[33m${s}\x1b[0m`;
+	if (pct > 75) return red(s);
+	if (pct > 50) return yellow(s);
 	return s;
 }
+
+/** A window is "drained" once this much is spent — see clockColor. */
+const DRAINED_PCT = 80;
+
+/**
+ * Colour the reset clock by how soon it fires, so a window about to roll over
+ * is obvious at a glance. Only while quota is left to lose: past DRAINED_PCT
+ * the window is spent, and an imminent reset is good news, not a warning.
+ */
+function clockColor(
+	msLeft: number,
+	pct: number,
+	redAt: number,
+	yellowAt: number,
+	s: string,
+): string {
+	if (pct >= DRAINED_PCT) return s;
+	if (msLeft <= redAt) return red(s);
+	if (msLeft <= yellowAt) return yellow(s);
+	return s;
+}
+
+/**
+ * Every field is padded to a fixed width so the columns line up down the list.
+ * Padding happens BEFORE colouring — ANSI escapes count as characters to
+ * padStart/padEnd, so a coloured cell padded afterwards comes out short.
+ * Widest clock is "6d 19h"/"4h 15m" (6), widest percent is "100" (3).
+ */
+const CLOCK_W = 6;
+const PCT_W = 3;
+const BLANK_CLOCK = " ".repeat(CLOCK_W + 2); // the "(" and ")" too
 
 function window(
 	name: string,
 	w: { pct: number; resets_at?: string } | undefined,
+	redAt: number,
+	yellowAt: number,
 ): string {
-	if (!w) return `${name} —`;
+	if (!w)
+		return `${name}${BLANK_CLOCK} [${"─".repeat(8)}] ${"—".padStart(PCT_W + 1)}`;
 	const pct = Math.round(w.pct);
-	const bar =
-		"█".repeat(Math.round((pct / 100) * 8)) +
-		"░".repeat(8 - Math.round((pct / 100) * 8));
-	return quotaColor(pct, `${name}${resetsIn(w.resets_at)} [${bar}] ${pct}%`);
+	const filled = Math.round((pct / 100) * 8);
+	const bar = "█".repeat(filled) + "░".repeat(8 - filled);
+	const at = w.resets_at ? Date.parse(w.resets_at) : Number.NaN;
+	// The clock and the bar are coloured independently: one says "time is running
+	// out", the other "quota is running out". They are not the same warning.
+	const clock = Number.isFinite(at)
+		? clockColor(
+				at - Date.now(),
+				pct,
+				redAt,
+				yellowAt,
+				`(${relative(at - Date.now()).padStart(CLOCK_W)})`,
+			)
+		: BLANK_CLOCK;
+	return `${name}${clock} ${quotaColor(pct, `[${bar}] ${String(pct).padStart(PCT_W)}%`)}`;
 }
 
 export function accountState(account: Account, now = Date.now()): string {
@@ -63,10 +107,12 @@ export function accountLine(
 	]
 		.filter(Boolean)
 		.join(" ");
+	// Fixed-width fields first so the quota columns line up down the list; the
+	// variable-length label/email goes last, where ragged ends cost nothing.
 	const parts = [
-		`${isActive ? "▸" : " "} ${index + 1}. ${account.label}${id ? ` ${id}` : ""}`,
-		window("5h", entry?.five_hour),
-		window("7d", entry?.seven_day),
+		`${isActive ? "▸" : " "} ${index + 1}.`,
+		window("5h", entry?.five_hour, HOUR, 2 * HOUR),
+		window("7d", entry?.seven_day, DAY, 2 * DAY),
 	];
 	for (const s of entry?.scoped ?? [])
 		parts.push(`${s.name} ${Math.round(s.pct)}%`);
@@ -81,6 +127,7 @@ export function accountLine(
 		parts.push(
 			`login ok to ${new Date(account.refreshExpires).toISOString().slice(0, 10)}`,
 		);
+	parts.push(`${account.label}${id ? ` ${id}` : ""}`);
 	if (entry?.error) parts.push(`usage: ${entry.error}`);
 	else if (entry?.at && Date.now() - entry.at > SERVE_TTL_MS)
 		parts.push(`as of ${relative(Date.now() - entry.at)} ago`);

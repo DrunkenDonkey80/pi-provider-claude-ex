@@ -57,15 +57,26 @@ candidate on **quota left minus time left to spend it**, per window:
 
 ```text
 slack_w = (1 - pct/100) - time_until_reset / window_length
-score   = slack_7d + 2 * slack_5h
+score   = slack_7d  +  2 * max(0, slack_5h)  +  0.5 * (1 - pct_5h/100)
 ```
 
-Positive slack means use-it-or-lose-it; negative means ahead of budget, save it.
-So a 5h window resetting in 15 minutes with half unspent wins, while "70% of the
-week gone with 3 days left" is held back. Weights come from `pick-sim.py`
-(4 simulated weeks x 12 seeds: ~10% less wasted weekly quota than picking on
-remaining quota alone). They sit on a plateau, not a peak — re-run the sim
-before tuning.
+Three terms, because "should I use this account" is three questions:
+
+* `slack_7d` — **strategic**: is this week's quota going to waste? Positive slack
+  means use-it-or-lose-it, negative means ahead of budget, save it. "70% of the
+  week gone with 3 days left" scores negative and gets held back.
+* `max(0, slack_5h)` — **opportunistic**: a 5h window about to reset with quota
+  still on it. A bonus only. Being out of 5h quota is temporary (the pool
+  benches such an account separately), so it must never subtract: signed, it
+  buried an account sitting on 87% of its week with 2 days to burn it at -1.12,
+  behind accounts with nothing left to give.
+* `0.5 * free_5h` — **practical**: can it serve right now, or stall in ten
+  minutes? Capped well under the weekly term, so it breaks ties rather than
+  driving the choice.
+
+Weights come from `pick-sim.py` (4 simulated weeks x 12 seeds: ~10% less wasted
+weekly quota than picking on remaining quota alone). They sit on a plateau, not
+a peak — re-run the sim before tuning.
 
 Stale numbers are the real hazard — another machine or pi session can drain an
 account between our reads — so the pool:
