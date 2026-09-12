@@ -51,8 +51,22 @@ generation — which is what actually keeps a login alive.
 
 ### Which account gets picked
 
-Stay pinned while the current account works. When it doesn't, score every
-candidate on **quota left minus time left to spend it**, per window:
+**Automatic selection is on by default.** Every 20 minutes the background sweep
+re-reads every candidate's usage and moves to whatever sits at the top of the
+list. Two rules keep it from fighting you:
+
+* **A manual switch wins — until that account runs out.** Picking an account in
+  `/claude-pool` (or `cpool switch <label>`) pins it and the sweep leaves it
+  alone. The moment it goes full or starts cooling, automatic selection resumes.
+* **An exhausted account always jumps to the best one**, whether automatic
+  selection is on or off. Being out of quota is not a preference to respect.
+
+Toggle it with `/claude-pool-auto` or `cpool auto [on|off]`. Off means the pool
+only switches when the account in use runs out.
+
+"Best" is defined once: the **top usable row of the list you see**, so the list
+and the switch can never disagree. When nothing is usable, the score below picks
+the stand-in:
 
 ```text
 slack_w = (1 - pct/100) - time_until_reset / window_length
@@ -94,11 +108,16 @@ In the `/claude-pool` list, keys act on the hovered row: `enter` switch,
 `r` refresh usage, `d` enable/disable, `-` remove, `esc` close. Refresh, toggle
 and remove re-present the updated list instead of closing it.
 
-The display is sorted for human scanning, independently of the automatic picker:
-usable accounts first by lowest 5h usage then soonest 7d reset; next, 5h-full
-accounts with under 90% weekly usage by soonest 5h reset; then other healthy,
-cooling, and dead/disabled accounts. Row numbers are rankings only, never command
-targets — commands accept labels or unique substrings.
+The list is sorted for human scanning, and automatic selection takes its pick
+from the same order: usable accounts first by **soonest 7d reset** (weekly quota
+is the perishable one — whatever is left on it evaporates), with lowest 5h usage
+as the tie-break; next, 5h-full accounts with under 90% weekly usage by soonest
+5h reset; then other healthy, cooling, and dead/disabled accounts. Row numbers are rankings
+only, never command targets — commands accept labels or unique substrings.
+
+A **disabled** account is held out of rotation but still kept logged in: the
+keep-alive sweep refreshes its token like any other, so it is ready the moment
+you re-enable it. Only a `dead` lineage is left alone.
 
 ### Moving accounts to another computer
 

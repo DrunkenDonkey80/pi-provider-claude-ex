@@ -13,6 +13,7 @@ import {
 	writeJsonAtomic,
 } from "./store.ts";
 import {
+	autoSwitchEnabled,
 	ensureFresh,
 	invalidateSnapshot,
 	pickActive,
@@ -330,7 +331,8 @@ export function setupCommands(pi: ExtensionAPI): void {
 				if (!pick) return; // Esc
 				if (pick.act === "switch") {
 					const target = fresh.accounts.find((a) => a.label === pick.label);
-					await setActive(pick.label);
+					// Human choice: hold it until this account runs out, then auto resumes.
+					await setActive(pick.label, { manual: true });
 					ctx.ui.notify(
 						await switchReport(pick.label),
 						target?.dead ? "warning" : "info",
@@ -452,7 +454,7 @@ export function setupCommands(pi: ExtensionAPI): void {
 
 	register("claude-pool-disable", {
 		description:
-			"Hold an account out of rotation (toggle). Usage: /claude-pool-disable <label>",
+			"Hold an account out of rotation, still refreshed (toggle). Usage: /claude-pool-disable <label>",
 		handler: async (args, ctx) => {
 			const target = resolveAccount(readStore().accounts, args);
 			if (!target) {
@@ -461,7 +463,28 @@ export function setupCommands(pi: ExtensionAPI): void {
 			}
 			const next = await toggleDisabled(target.label);
 			ctx.ui.notify(
-				`"${target.label}" is now ${next ? "disabled" : "enabled"}.`,
+				`"${target.label}" is now ${next ? "disabled" : "enabled"}${
+					next ? " (still kept logged in)." : "."
+				}`,
+				"info",
+			);
+		},
+	});
+
+	register("claude-pool-auto", {
+		description:
+			"Toggle automatic account selection (on by default, re-picks every 20m)",
+		handler: async (_args, ctx) => {
+			const on = await mutateStore((store) => {
+				store.autoSwitch = !autoSwitchEnabled(store);
+				if (store.autoSwitch) store.manualPin = false; // stop holding the pin
+				return store.autoSwitch;
+			});
+			invalidateSnapshot();
+			ctx.ui.notify(
+				on
+					? "Automatic selection ON — the best account is re-picked every 20m."
+					: "Automatic selection OFF — the pool only switches when an account runs out.",
 				"info",
 			);
 		},

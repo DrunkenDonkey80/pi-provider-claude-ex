@@ -198,8 +198,11 @@ export function sortAccountsForDisplay(
 	return ranked
 		.sort((a, b) => {
 			if (a.group !== b.group) return a.group - b.group;
+			// Weekly quota is the perishable one: spend the account whose 7d window
+			// resets soonest, since anything left on it evaporates. 5h usage only
+			// breaks ties. (An unknown reset sorts last: no data, no urgency.)
 			if (a.group === 0)
-				return a.pct5 - b.pct5 || a.reset7 - b.reset7 || a.index - b.index;
+				return a.reset7 - b.reset7 || a.pct5 - b.pct5 || a.index - b.index;
 			if (a.group === 1) return a.reset5 - b.reset5 || a.index - b.index;
 			return a.index - b.index;
 		})

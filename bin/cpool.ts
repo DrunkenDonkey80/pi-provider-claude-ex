@@ -8,8 +8,9 @@
  *
  *   cpool list [--json]          accounts with 5h / weekly quota
  *   cpool status                 alias of list
- *   cpool switch <label>         pin the active account
+ *   cpool switch <label>         pin the active account (held until it runs out)
  *   cpool switch                 rotate to the next usable account
+ *   cpool auto [on|off]          automatic best-account selection (default on)
  *   cpool add <label>            snapshot auth.json's /login account
  *   cpool remove <label>
  *   cpool disable <label>        toggle out of / into rotation
@@ -22,6 +23,8 @@ import { join } from "node:path";
 import { AGENT_DIR, mutateStore, readStore } from "../store.ts";
 import {
 	KEEPALIVE_MS,
+	autoSwitchEnabled,
+	bestLabel,
 	ensureFresh,
 	pickActive,
 	runDaemon,
@@ -113,7 +116,8 @@ switch (command) {
 			}
 			if (!pick) die("every account is disabled, dead, or cooling down");
 		}
-		await setActive(pick!.label);
+		// An explicit switch is a human pin: held until that account runs out.
+		await setActive(pick!.label, { manual: true });
 		const account = await ensureFresh(pick!.label);
 		console.log(
 			`active → ${pick!.label}${account?.dead ? " (login dead — /login anthropic then cpool add)" : ""}`,
@@ -192,6 +196,24 @@ switch (command) {
 		break;
 	}
 
+	case "auto": {
+		const want = target.toLowerCase();
+		if (want && want !== "on" && want !== "off")
+			die("usage: cpool auto [on|off]");
+		const store = readStore();
+		const on = want ? want === "on" : !autoSwitchEnabled(store);
+		await mutateStore((s) => {
+			s.autoSwitch = on;
+			if (on) s.manualPin = false;
+		});
+		console.log(
+			`automatic selection ${on ? "on" : "off"}${
+				on ? ` — best now: ${bestLabel(readStore()) ?? "none"}` : ""
+			}`,
+		);
+		break;
+	}
+
 	case "daemon": {
 		console.log(
 			`cpool daemon: pid ${process.pid}, keep-alive every ${relative(KEEPALIVE_MS)} per idle account. Ctrl-C to stop.`,
@@ -206,6 +228,7 @@ switch (command) {
 			[
 				"cpool list [--json]        accounts with 5h / weekly quota",
 				"cpool switch [label]       pin active account (bare = rotate)",
+				"cpool auto [on|off]        automatic best-account selection",
 				"cpool add <label>          snapshot auth.json's /login account",
 				"cpool remove <label>",
 				"cpool disable <label>      toggle out of / into rotation",

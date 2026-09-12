@@ -68,6 +68,12 @@ export interface Store {
 	enabled?: boolean;
 	/** Label of the pinned active account (sticky across restarts). */
 	active?: string;
+	/** Re-pick the best account in the background. Default ON (undefined = on). */
+	autoSwitch?: boolean;
+	/** The pin was a human choice: hold it until that account runs out. */
+	manualPin?: boolean;
+	/** Epoch ms of the last automatic re-pick, so the sweep keeps its cadence. */
+	autoSwitchAt?: number;
 	accounts: Account[];
 }
 

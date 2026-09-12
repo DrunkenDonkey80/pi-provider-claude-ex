@@ -30,6 +30,7 @@ import {
 	writeJsonAtomic,
 } from "./store.ts";
 import { type RefreshError, refreshGrant } from "./oauth.ts";
+import { sortAccountsForDisplay } from "./format.ts";
 import {
 	SERVE_TTL_MS,
 	collectUsage,
@@ -49,6 +50,8 @@ const DEFAULT_COOLDOWN_MS = 5 * 60_000;
 export const TICK_MS = 5 * 60_000;
 /** Only the in-use account polls in the background; the rest refresh on demand. */
 export const ACTIVE_USAGE_MS = 5 * 60_000;
+/** How often the background sweep re-reads everything and re-picks the best. */
+export const AUTO_SWITCH_MS = 20 * 60_000;
 const DAEMON_HEARTBEAT_MS = 30_000;
 const DAEMON_STALE_MS = 90_000;
 /** getApiKey() is synchronous and hot: memoize the on-disk store briefly. */
@@ -127,10 +130,16 @@ export function activeAccount(): Account | undefined {
 }
 
 /** Pin an account as active (persisted, so it survives restarts). */
-export async function setActive(label: string): Promise<boolean> {
+export async function setActive(
+	label: string,
+	opts: { manual?: boolean } = {},
+): Promise<boolean> {
 	const ok = await mutateStore((store) => {
 		if (!findAccount(store, label)) return false;
 		store.active = label;
+		// A human pin outranks the sweep until that account runs out; an automatic
+		// pin must clear the flag, or one manual switch would freeze the pool.
+		store.manualPin = opts.manual === true;
 		return true;
 	});
 	invalidateSnapshot();
@@ -287,11 +296,40 @@ async function parkFull(labels: string[]): Promise<void> {
  * times a day), and every read is still behind collectUsage's 180s floor and
  * 429 backoff.
  */
-export async function pickNext(): Promise<string | undefined> {
+/**
+ * The account the user sees at the top of `/claude-pool` — one ranking for the
+ * list and for the switch, so "best" is never something only the code knows.
+ * Falls back to `pickActive` when nothing is usable (soonest cooldown).
+ */
+export function bestLabel(store: Store, now = Date.now()): string | undefined {
+	const ranked = sortAccountsForDisplay(store.accounts, readUsage(), now);
+	return ranked.find((a) => usable(a, now))?.label ?? pickActive(store);
+}
+
+/** Auto-switch on? Absent means yes: the pool should manage itself by default. */
+export const autoSwitchEnabled = (store: Store): boolean =>
+	store.autoSwitch !== false;
+
+/**
+ * Should the sweep re-pick now? A manual pin holds while it can still serve;
+ * once it runs out the pool takes over again, which is the whole point of
+ * pinning "until it's full" rather than forever.
+ */
+export function autoSwitchDue(store: Store, now = Date.now()): boolean {
+	if (!autoSwitchEnabled(store)) return false;
+	const pinned = store.active ? findAccount(store, store.active) : undefined;
+	if (store.manualPin && pinned && usable(pinned, now)) return false;
+	return now - (store.autoSwitchAt ?? 0) >= AUTO_SWITCH_MS;
+}
+
+export async function pickNext(
+	opts: { force?: boolean } = {},
+): Promise<string | undefined> {
 	const store = readStore();
 	// No switch pending: the pinned account still works, so spend nothing.
+	// `force` is the periodic sweep, which re-reads precisely to find better.
 	const pinned = store.active ? findAccount(store, store.active) : undefined;
-	if (pinned && usable(pinned)) return pinned.label;
+	if (!opts.force && pinned && usable(pinned)) return pinned.label;
 
 	const labels = store.accounts.filter((a) => usable(a)).map((a) => a.label);
 	if (labels.length > 1) {
@@ -302,7 +340,7 @@ export async function pickNext(): Promise<string | undefined> {
 			/* a failed read must never block the switch — fall back to cache */
 		}
 	}
-	const next = pickActive(readStore());
+	const next = bestLabel(readStore());
 	// Pin it. Without a persisted choice `pickActive` re-scores the cache on
 	// every call, so the account in use drifts each time the numbers move — the
 	// pool looks like it switched by itself. Sticky only works if we write it.
@@ -370,6 +408,8 @@ export function daemonAlive(): boolean {
 export async function tick(opts: { usage?: boolean } = {}): Promise<void> {
 	const store = readStore();
 	const now = Date.now();
+	// Disabled accounts are refreshed too: being held out of ROTATION must not
+	// let the login itself lapse. Only a dead lineage is skipped.
 	for (const account of store.accounts) {
 		if (account.dead) continue;
 		const idle = now - (account.lastGrantAt ?? account.expires - 8 * 3_600_000);
@@ -389,6 +429,15 @@ export async function tick(opts: { usage?: boolean } = {}): Promise<void> {
 	const active = pickActive(store);
 	if (active && now - (readUsage()[active]?.at ?? 0) >= ACTIVE_USAGE_MS)
 		await collectUsage([active], tokenFor, { max: 1 });
+
+	if (!autoSwitchDue(readStore(), now)) return;
+	// Stamp first: a failed read must not turn into a retry every tick.
+	await mutateStore((s) => {
+		s.autoSwitchAt = now;
+	});
+	invalidateSnapshot();
+	const picked = await pickNext({ force: true });
+	if (picked) log(`auto-switch → ${picked}`);
 }
 
 /** Long-running single-writer sweep loop (`cpool daemon`). */

@@ -156,6 +156,83 @@ await check("pickNext re-pins when the pinned account is dead", async () => {
 	pool.invalidateSnapshot();
 });
 
+// Automatic selection: on by default, re-picks on its own cadence, and yields
+// to a manual pin — but only while that pinned account can still serve. Pin
+// "until it's full", not forever, or one manual switch freezes the pool.
+await check(
+	"autoSwitchDue honours the setting, cadence and manual pin",
+	async () => {
+		const pool = await import("./pool.ts");
+		const now = Date.now();
+		const base = { accounts: [acct("a"), acct("b")], active: "a" };
+		const due = (over: Record<string, unknown>) =>
+			pool.autoSwitchDue({ ...base, ...over } as never, now);
+
+		assert.equal(due({}), true, "default is on, and never-run is due");
+		assert.equal(due({ autoSwitch: false }), false, "explicitly off");
+		assert.equal(due({ autoSwitchAt: now - 60_000 }), false, "ran a minute ago");
+		assert.equal(due({ autoSwitchAt: now - pool.AUTO_SWITCH_MS }), true);
+		assert.equal(due({ manualPin: true }), false, "manual pin still usable");
+		assert.equal(
+			pool.autoSwitchDue(
+				{
+					accounts: [acct("a", { cooldownUntil: now + 600_000 }), acct("b")],
+					active: "a",
+					manualPin: true,
+				} as never,
+				now,
+			),
+			true,
+			"a pinned account that ran out hands control back",
+		);
+	},
+);
+
+// One ranking for the list and the switch: "best" is the top usable row the
+// user is looking at, never a second opinion only the code knows.
+await check(
+	"bestLabel is the top usable row of the displayed list",
+	async () => {
+		const pool = await import("./pool.ts");
+		const now = Date.now();
+		const at = now;
+		seed([
+			acct("pinned-busy"),
+			acct("disabled-idle", { disabled: true }),
+			acct("best"),
+		]);
+		await store.mutateStore((s) => {
+			s.active = "pinned-busy";
+		});
+		store.writeJsonAtomic(store.USAGE_PATH, {
+			"pinned-busy": {
+				at,
+				five_hour: { pct: 70, resets_at: new Date(now + 3_600_000).toISOString() },
+				seven_day: {
+					pct: 20,
+					resets_at: new Date(now + 6 * 86_400_000).toISOString(),
+				},
+			},
+			"disabled-idle": {
+				at,
+				five_hour: { pct: 0, resets_at: new Date(now + 3_600_000).toISOString() },
+				seven_day: { pct: 0, resets_at: new Date(now + 86_400_000).toISOString() },
+			},
+			best: {
+				at,
+				five_hour: { pct: 10, resets_at: new Date(now + 3_600_000).toISOString() },
+				seven_day: {
+					pct: 20,
+					resets_at: new Date(now + 2 * 86_400_000).toISOString(),
+				},
+			},
+		});
+		assert.equal(pool.bestLabel(store.readStore(), now), "best");
+		rmSync(store.USAGE_PATH, { force: true });
+		pool.invalidateSnapshot();
+	},
+);
+
 // pi's auth.json is written once by /login and never rotated, so it goes stale
 // as soon as the pool refreshes that lineage. Adopting it at session start
 // minted `account-<now>` — a ghost that came back under a new name each time it
@@ -416,9 +493,11 @@ await check("display sorts ready accounts first, then useful 5h resets", () => {
 	assert.deepEqual(
 		format.sortAccountsForDisplay(accounts, cache, now).map((a) => a.label),
 		[
+			// Usable rows go by soonest 7d reset (1d, 2d, 3d); 5h usage only breaks
+			// ties, so ready-high (30% of 5h) outranks ready-late7 (10%).
 			"ready-early7",
-			"ready-late7",
 			"ready-high",
+			"ready-late7",
 			"full-soon",
 			"full-late",
 			"unknown",
