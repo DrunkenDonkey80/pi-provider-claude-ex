@@ -142,6 +142,51 @@ await check("pickActive stays pinned while the pin is usable", async () => {
 	assert.equal((await import("./pool.ts")).pickActive(store.readStore()), "b");
 });
 
+// A dead pin turns off stickiness: pickActive re-scores the cache on every
+// call, so the account in use drifts every time the numbers move. pickNext
+// must write its choice down. One usable candidate = no refresh, no network.
+await check("pickNext re-pins when the pinned account is dead", async () => {
+	const pool = await import("./pool.ts");
+	seed([acct("gone", { dead: true }), acct("live")]);
+	await store.mutateStore((s) => {
+		s.active = "gone";
+	});
+	assert.equal(await pool.pickNext(), "live");
+	assert.equal(store.readStore().active, "live", "the pick must be persisted");
+	pool.invalidateSnapshot();
+});
+
+// pi's auth.json is written once by /login and never rotated, so it goes stale
+// as soon as the pool refreshes that lineage. Adopting it at session start
+// minted `account-<now>` — a ghost that came back under a new name each time it
+// was deleted — or worse, overwrote a live refresh token with a spent one.
+await check(
+	"session-start attach mints no ghost from stale creds",
+	async () => {
+		const commands = await import("./commands.ts");
+		seed([acct("real")]);
+		writeFileSync(
+			join(dir, "auth.json"),
+			JSON.stringify({
+				anthropic: {
+					refresh: "rt-superseded",
+					access: "at-superseded",
+					expires: Date.now() + 3_600_000,
+				},
+			}),
+		);
+		// Unknown lineage and unidentifiable (the profile call fails on the stale
+		// access token): attach nothing rather than invent an account.
+		assert.equal(await commands.attachCurrentLogin(), undefined);
+		assert.deepEqual(
+			store.readStore().accounts.map((a) => a.label),
+			["real"],
+			"no ghost account may be created",
+		);
+		rmSync(join(dir, "auth.json"), { force: true });
+	},
+);
+
 await check(
 	"pickActive skips dead/disabled/cooling and prefers most quota",
 	async () => {
@@ -391,7 +436,7 @@ await check("accountLine shows state and quota", () => {
 	assert.ok(line.includes("\u001b[33m"), "71% window should be yellow");
 	assert.match(line, /Fable 12%/);
 	assert.match(line, /cooling/);
-	assert.match(line, /login exp 2026-11-04/);
+	assert.match(line, /login ok to 2026-11-04/);
 });
 
 // 7b. The public quota() accessor other extensions call.

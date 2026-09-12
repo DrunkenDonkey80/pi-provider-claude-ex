@@ -75,9 +75,11 @@ export function accountLine(
 			`spend ${entry.spend.used.toFixed(2)}/${entry.spend.limit.toFixed(2)} ${entry.spend.currency}`,
 		);
 	if (state !== "ok") parts.push(state);
+	// "login exp <date>" read as "login expired" on a truncated row; this is the
+	// date the login stays GOOD until, so say that.
 	if (account.refreshExpires)
 		parts.push(
-			`login exp ${new Date(account.refreshExpires).toISOString().slice(0, 10)}`,
+			`login ok to ${new Date(account.refreshExpires).toISOString().slice(0, 10)}`,
 		);
 	if (entry?.error) parts.push(`usage: ${entry.error}`);
 	else if (entry?.at && Date.now() - entry.at > SERVE_TTL_MS)

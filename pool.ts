@@ -302,7 +302,12 @@ export async function pickNext(): Promise<string | undefined> {
 			/* a failed read must never block the switch — fall back to cache */
 		}
 	}
-	return pickActive(readStore());
+	const next = pickActive(readStore());
+	// Pin it. Without a persisted choice `pickActive` re-scores the cache on
+	// every call, so the account in use drifts each time the numbers move — the
+	// pool looks like it switched by itself. Sticky only works if we write it.
+	if (next && next !== store.active) await setActive(next);
+	return next;
 }
 
 export async function markRateLimited(
@@ -324,8 +329,7 @@ export async function markRateLimited(
 		if (account) account.cooldownUntil = parked;
 	});
 	invalidateSnapshot();
-	const next = await pickNext();
-	if (next) await setActive(next);
+	const next = await pickNext(); // pins the replacement itself
 	log(`rate-limited ${label} until ${new Date(parked).toISOString()} → ${next}`);
 	return next;
 }

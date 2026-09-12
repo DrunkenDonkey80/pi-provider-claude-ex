@@ -138,6 +138,20 @@ export async function attachCurrentLogin(labelHint?: string): Promise<
 		byLabel ?? (labelHint ? undefined : findByIdentity(store.accounts, profile));
 	const label =
 		target?.label ?? labelHint ?? defaultLabel(store.accounts, profile);
+	// pi's auth.json is written once by /login and never rotated; the pool rotates
+	// the lineage on every refresh. So a leftover file is usually a SPENT
+	// generation, and adopting it silently does damage:
+	//   - unidentifiable (profile call fails on the stale access token) it mints
+	//     `account-<now>`, a ghost that returns with a new name every session;
+	//   - identifiable it overwrites a LIVE refresh token with a spent one, which
+	//     is invalid_grant — the account goes dead.
+	// An explicit label means the user just logged in and said so: always honor
+	// it. Otherwise only adopt credentials newer than the ones we already hold.
+	if (!labelHint) {
+		if (target && !target.dead && creds.expires <= (target.expires ?? 0))
+			return undefined;
+		if (!target && !profile.uuid) return undefined;
+	}
 	await upsertAccount(label, {
 		...creds,
 		uuid: profile.uuid,
