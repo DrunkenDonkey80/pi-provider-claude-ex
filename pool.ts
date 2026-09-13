@@ -38,6 +38,7 @@ import {
 	readUsage,
 	switchScore,
 } from "./usage.ts";
+import { runWarm } from "./warm.ts";
 import { join } from "node:path";
 
 /** Refresh the access token this long before it expires. */
@@ -423,6 +424,9 @@ export async function tick(opts: { usage?: boolean } = {}): Promise<void> {
 		}
 	}
 	if (opts.usage === false) return;
+	// Off by default. One warm-up at most, spaced so the windows it starts stay
+	// evenly phased rather than all expiring together.
+	await runWarm(tokenFor, log);
 	// Only the account in use is polled in the background (every ACTIVE_USAGE_MS,
 	// still behind its own 429 backoff). The others are read on demand — `r` in
 	// /claude-pool, `cpool list --refresh`.

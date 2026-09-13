@@ -74,6 +74,13 @@ export interface Store {
 	manualPin?: boolean;
 	/** Epoch ms of the last automatic re-pick, so the sweep keeps its cadence. */
 	autoSwitchAt?: number;
+	/**
+	 * How many 5h windows to keep already running. Absent/0 = off; `all` warms
+	 * every eligible account. Costs a token of weekly quota per warm-up.
+	 */
+	warm?: number | "all";
+	/** Epoch ms of the last warm-up, so window starts stay staggered. */
+	warmAt?: number;
 	accounts: Account[];
 }
 

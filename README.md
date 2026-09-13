@@ -156,6 +156,49 @@ A **disabled** account is held out of rotation but still kept logged in: the
 keep-alive sweep refreshes its token like any other, so it is ready the moment
 you re-enable it. Only a `dead` lineage is left alone.
 
+### Keeping 5h windows warm (off by default)
+
+The 5h window is created by an account's **first billable request** and ends
+exactly 5h later — an account you have never used shows no reset clock at all
+(the blank `5h` column). That makes an untouched account a liability for burst
+work: start it, drain the quota in 30 minutes, and you wait out the remaining
+4h30m. An account whose window opened hours ago costs the same 30 minutes and
+then resets almost immediately.
+
+So the sweep can send one minimal request (`max_tokens: 1`) to the top few
+accounts whose window has not started, and you arrive mid-window instead of at
+its start:
+
+```sh
+cpool warm          # show current setting and which windows are still cold
+cpool warm 2        # keep the top 2 unstarted windows running
+cpool warm all
+cpool warm off      # default
+```
+
+`1`/`2`/`all` are **counts, not row numbers** — targets are the top N of the
+same ranking the list uses.
+
+This is the only request the extension makes that **spends quota**; everything
+else reads `/api/oauth/*`. Three deliberate limits:
+
+* **Warm starts are staggered 5h/N apart.** N windows opened in one sweep all
+  expire in the same minute, which trades one convoy for another — the same
+  failure the jittered sweep exists to prevent, one layer up.
+* **Disabled, dead, cooling, and nearly-spent-weekly accounts are skipped.**
+  Disabled means out of rotation, and weekly quota spent on a window you never
+  use is the one cost here that does not come back.
+* **Never warms blind.** An account with no usage read has an *unknown* window;
+  a missing reset clock there means "no data", not "not started". After a
+  warm-up its usage is re-read immediately, so the started window is visible to
+  every session and cannot be warmed twice off a stale cache.
+
+Worth knowing before turning it on: this is automated traffic whose only purpose
+is to start rate-limit windows, and on a **shared team seat it starts someone
+else's 5h window** and spends a sliver of their weekly quota. It also removes
+stalls rather than adding capacity — the weekly cap is still the ceiling. Hence
+off by default.
+
 ### Moving accounts to another computer
 
 `/claude-pool-export` writes `~/.pi/agent/claude-pool-export.json` (path shown,
@@ -185,6 +228,7 @@ cpool add work             # snapshot auth.json's /login account
 cpool disable datecs:work  # toggle out of rotation
 cpool refresh [label]      # force a token refresh
 cpool daemon [--once]      # single-writer keep-alive + usage sweep
+cpool warm [off|1|2|all]   # keep that many 5h windows already running (off)
 ```
 
 Run `cpool daemon` (systemd/Task Scheduler/`--once` from cron) if you want the

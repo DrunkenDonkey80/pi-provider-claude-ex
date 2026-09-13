@@ -16,6 +16,7 @@
  *   cpool disable <label>        toggle out of / into rotation
  *   cpool refresh [label]        force a token refresh (all, or one)
  *   cpool daemon [--once]        single-writer keep-alive + usage sweep
+ *   cpool warm [off|1|2|all]     keep that many 5h windows already running
  */
 
 import { existsSync, readFileSync } from "node:fs";
@@ -40,6 +41,7 @@ import {
 	resolveAccount,
 } from "../format.ts";
 import { attachCurrentLogin, toggleDisabled } from "../commands.ts";
+import { warmLimit, warmSpacingMs, warmTargets } from "../warm.ts";
 
 const args = process.argv.slice(2);
 const command = (args[0] ?? "list").replace(/^--?/, "");
@@ -214,6 +216,32 @@ switch (command) {
 		break;
 	}
 
+	case "warm": {
+		const want = target.toLowerCase();
+		if (want) {
+			const value =
+				want === "off" ? 0 : want === "all" ? ("all" as const) : Number(want);
+			if (value !== "all" && (!Number.isInteger(value) || value < 0))
+				die("usage: cpool warm [off|1|2|all]");
+			await mutateStore((s) => {
+				s.warm = value === 0 ? undefined : value;
+			});
+		}
+		const store = readStore();
+		const cache = readUsage();
+		if (warmLimit(store) === 0) {
+			console.log("5h warm-up off");
+			break;
+		}
+		const cold = warmTargets(store, cache).map((a) => a.label);
+		console.log(
+			`5h warm-up on for ${store.warm} account(s), one every ${relative(
+				warmSpacingMs(store, cache),
+			)} — not started yet: ${cold.join(", ") || "none"}`,
+		);
+		break;
+	}
+
 	case "daemon": {
 		console.log(
 			`cpool daemon: pid ${process.pid}, keep-alive every ${relative(KEEPALIVE_MS)} per idle account. Ctrl-C to stop.`,
@@ -234,6 +262,7 @@ switch (command) {
 				"cpool disable <label>      toggle out of / into rotation",
 				"cpool refresh [label]      force a token refresh",
 				"cpool daemon [--once]      keep-alive + usage sweep",
+				"cpool warm [off|1|2|all]   keep 5h windows already running",
 			].join("\n"),
 		);
 		if (command !== "help") process.exitCode = 1;

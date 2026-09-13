@@ -402,6 +402,52 @@ export async function fetchUsage(access: string): Promise<UsageSnapshot> {
 	return parseUsage((await response.json()) as Record<string, unknown>);
 }
 
+/** Cheapest model available to a subscription token. */
+const WARM_MODEL = "claude-3-5-haiku-latest";
+
+/**
+ * Smallest billable request there is: one token in, one token out. Its only
+ * purpose is to START the account's 5h session window, so a later burst of
+ * work arrives mid-window instead of opening a fresh one it will drain in
+ * minutes.
+ *
+ * This is the ONLY request this extension makes that spends quota — everything
+ * else reads `/api/oauth/*`. Subscription tokens are rejected unless the first
+ * system block is Claude Code's own prompt, so it is sent verbatim.
+ */
+export async function warmSession(access: string): Promise<void> {
+	const response = await fetch("https://api.anthropic.com/v1/messages", {
+		method: "POST",
+		headers: {
+			Authorization: `Bearer ${access}`,
+			"anthropic-beta": "oauth-2025-04-20",
+			"anthropic-version": "2023-06-01",
+			"content-type": "application/json",
+		},
+		body: JSON.stringify({
+			model: WARM_MODEL,
+			max_tokens: 1,
+			system: [
+				{
+					type: "text",
+					text: "You are Claude Code, Anthropic's official CLI for Claude.",
+				},
+			],
+			messages: [{ role: "user", content: "hi" }],
+		}),
+		signal: AbortSignal.timeout(20_000),
+	});
+	if (!response.ok) {
+		const raw = response.headers.get("retry-after");
+		const retry = raw ? Number(raw) : undefined;
+		throw new UsageHttpError(
+			response.status,
+			Number.isFinite(retry) ? (retry as number) : undefined,
+		);
+	}
+	await response.body?.cancel();
+}
+
 export function parseUsage(data: Record<string, unknown>): UsageSnapshot {
 	const out: UsageSnapshot = {};
 	const win = (raw: unknown): UsageWindow | undefined => {

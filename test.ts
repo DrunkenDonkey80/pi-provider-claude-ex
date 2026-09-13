@@ -23,6 +23,7 @@ const store = await import("./store.ts");
 const { parseUsage } = await import("./oauth.ts");
 const usage = await import("./usage.ts");
 const format = await import("./format.ts");
+const warm = await import("./warm.ts");
 
 const results: string[] = [];
 const check = async (name: string, fn: () => Promise<void> | void) => {
@@ -862,6 +863,84 @@ await check("store file is written 0600", () => {
 		assert.equal(statSync(store.POOL_PATH).mode & 0o777, 0o600);
 	}
 });
+
+// 9. Warming spends real quota, so it must never touch an account the user
+//    held out of rotation, one that is dead/cooling, one nearly out of its
+//    week, or one we have no usage read for (no data != window not started).
+await check(
+	"warm-up targets only unstarted windows on eligible accounts",
+	async () => {
+		const now = Date.now();
+		const iso = (ms: number) => new Date(now + ms).toISOString();
+		const week = (pct: number, leftMs: number) => ({
+			pct,
+			resets_at: iso(leftMs),
+		});
+		const cold = (pct7: number, left7: number) => ({
+			at: now,
+			five_hour: { pct: 0 },
+			seven_day: week(pct7, left7),
+		});
+		seed([
+			acct("cold-soon"),
+			acct("cold-later"),
+			acct("started"),
+			acct("off", { disabled: true }),
+			acct("gone", { dead: true }),
+			acct("cooling", { cooldownUntil: now + 3_600_000 }),
+			acct("weekspent"),
+			acct("unread"),
+		]);
+		store.writeJsonAtomic(store.USAGE_PATH, {
+			"cold-soon": cold(20, 2 * 86_400_000),
+			"cold-later": cold(20, 6 * 86_400_000),
+			started: {
+				at: now,
+				five_hour: { pct: 4, resets_at: iso(4 * 3_600_000) },
+				seven_day: week(20, 2 * 86_400_000),
+			},
+			off: cold(10, 2 * 86_400_000),
+			gone: cold(10, 2 * 86_400_000),
+			cooling: cold(10, 2 * 86_400_000),
+			weekspent: cold(95, 2 * 86_400_000),
+			// Never fetched (no `at`): unknown, not "unstarted".
+			unread: { five_hour: { pct: 0 }, seven_day: week(10, 2 * 86_400_000) },
+		});
+		const cache = usage.readUsage();
+		const targets = () =>
+			warm.warmTargets(store.readStore(), cache, now).map((a) => a.label);
+
+		assert.deepEqual(targets(), [], "off by default");
+		await store.mutateStore((s) => {
+			s.warm = 2;
+		});
+		assert.deepEqual(targets(), ["cold-soon", "cold-later"]);
+		await store.mutateStore((s) => {
+			s.warm = 1;
+		});
+		assert.deepEqual(targets(), ["cold-soon"], "limit caps the count");
+	},
+);
+
+// 10. Warm starts must be staggered: N windows opened in one sweep all expire
+//     in the same minute, which is the convoy the jittered sweep exists to
+//     avoid, one layer up.
+await check(
+	"warm-up spacing splits the 5h window across the accounts kept warm",
+	async () => {
+		seed([acct("a"), acct("b"), acct("c"), acct("d")]);
+		const spacing = async (value: number | "all") => {
+			await store.mutateStore((s) => {
+				s.warm = value;
+			});
+			return warm.warmSpacingMs(store.readStore(), {});
+		};
+		assert.equal(await spacing(1), 5 * 3_600_000);
+		assert.equal(await spacing(2), 2.5 * 3_600_000);
+		// `all` spreads across every eligible account, not across infinity.
+		assert.equal(await spacing("all"), 1.25 * 3_600_000);
+	},
+);
 
 console.log(results.join("\n"));
 rmSync(dir, { recursive: true, force: true });
