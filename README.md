@@ -47,6 +47,8 @@ generation — which is what actually keeps a login alive.
 /claude-pool-disable <label>     hold out of / return to rotation (toggle)
 /claude-pool-export          write the logins to a portable file + clipboard
 /claude-pool-import [path|json]  load them on another machine
+/claude-pool-auto            toggle automatic account selection (on by default)
+/claude-pool-warm [off|1|2|all]   keep unstarted 5h windows running (off)
 ```
 
 ### Which account gets picked
@@ -170,6 +172,9 @@ accounts whose window has not started, and you arrive mid-window instead of at
 its start:
 
 ```sh
+/claude-pool-warm   # bare cycles off → 1 → 2 → all
+/claude-pool-warm 2
+
 cpool warm          # show current setting and which windows are still cold
 cpool warm 2        # keep the top 2 unstarted windows running
 cpool warm all

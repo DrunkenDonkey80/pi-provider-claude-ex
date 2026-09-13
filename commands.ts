@@ -21,9 +21,11 @@ import {
 } from "./pool.ts";
 import {
 	accountLine,
+	relative,
 	resolveAccount,
 	sortAccountsForDisplay,
 } from "./format.ts";
+import { warmSpacingMs, warmTargets } from "./warm.ts";
 import { collectUsage, readUsage } from "./usage.ts";
 import { type Profile, fetchProfile } from "./oauth.ts";
 
@@ -485,6 +487,43 @@ export function setupCommands(pi: ExtensionAPI): void {
 				on
 					? "Automatic selection ON — the best account is re-picked every 20m."
 					: "Automatic selection OFF — the pool only switches when an account runs out.",
+				"info",
+			);
+		},
+	});
+
+	register("claude-pool-warm", {
+		description:
+			"Keep unstarted 5h windows already running, off by default (bare cycles off/1/2/all). Usage: /claude-pool-warm [off|1|2|all]",
+		handler: async (args, ctx) => {
+			// Counts, never row numbers — no account is addressed positionally.
+			const cycle: (number | "all" | undefined)[] = [undefined, 1, 2, "all"];
+			const want = args.trim().toLowerCase();
+			let next: number | "all" | undefined;
+			if (!want) {
+				const current = readStore().warm || undefined;
+				next = cycle[(cycle.indexOf(current) + 1) % cycle.length];
+			} else if (want === "off") next = undefined;
+			else if (want === "all") next = "all";
+			else if (/^[1-9]\d*$/.test(want)) next = Number(want);
+			else {
+				ctx.ui.notify("Usage: /claude-pool-warm [off|1|2|all]", "warning");
+				return;
+			}
+			await mutateStore((s) => {
+				s.warm = next;
+			});
+			if (next === undefined) {
+				ctx.ui.notify("5h warm-up OFF.", "info");
+				return;
+			}
+			const store = readStore();
+			const cache = readUsage();
+			const cold = warmTargets(store, cache).map((a) => a.label);
+			ctx.ui.notify(
+				`5h warm-up ON for ${next} account(s), one every ${relative(
+					warmSpacingMs(store, cache),
+				)} — not started yet: ${cold.join(", ") || "none"}`,
 				"info",
 			);
 		},
