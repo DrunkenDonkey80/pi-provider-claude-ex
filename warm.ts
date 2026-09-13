@@ -88,8 +88,28 @@ export function warmSpacingMs(
 	cache: UsageCache,
 	now = Date.now(),
 ): number {
+	// An explicit interval wins: shorter fills a cold pool faster, at the cost
+	// of the phasing — windows opened close together expire close together, so
+	// the pool goes briefly all-cold instead of always holding one mid-window.
+	// It does re-stagger itself over the cycle that follows.
+	if (store.warmEveryMs && store.warmEveryMs > 0) return store.warmEveryMs;
 	const plan = Math.min(warmLimit(store), eligible(store, cache, now).length);
 	return WINDOW_5H / Math.max(1, plan);
+}
+
+/**
+ * `30m` / `2h` / bare minutes -> ms. Undefined when it is not a duration, so a
+ * caller can tell bad input from "not given" instead of silently warming on a
+ * NaN interval.
+ */
+export function parseEvery(text: string): number | undefined {
+	const match = /^(\d+(?:\.\d+)?)\s*(m|min|h)?$/.exec(
+		text.trim().toLowerCase(),
+	);
+	if (!match) return undefined;
+	const value = Number(match[1]);
+	if (!(value > 0)) return undefined;
+	return value * (match[2] === "h" ? 3_600_000 : 60_000);
 }
 
 /**

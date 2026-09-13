@@ -939,6 +939,24 @@ await check(
 		assert.equal(await spacing(2), 2.5 * 3_600_000);
 		// `all` spreads across every eligible account, not across infinity.
 		assert.equal(await spacing("all"), 1.25 * 3_600_000);
+
+		// An explicit interval wins over the 5h/N phasing, and clears back to it.
+		await store.mutateStore((s) => {
+			s.warmEveryMs = 30 * 60_000;
+		});
+		assert.equal(warm.warmSpacingMs(store.readStore(), {}), 30 * 60_000);
+		await store.mutateStore((s) => {
+			s.warmEveryMs = undefined;
+		});
+		assert.equal(warm.warmSpacingMs(store.readStore(), {}), 1.25 * 3_600_000);
+
+		assert.equal(warm.parseEvery("30m"), 1_800_000);
+		assert.equal(warm.parseEvery("2h"), 7_200_000);
+		assert.equal(warm.parseEvery("45"), 2_700_000, "bare number is minutes");
+		// Bad input must stay distinguishable from "not given": a NaN interval
+		// makes every comparison false, which warms on every single sweep.
+		assert.equal(warm.parseEvery("soon"), undefined);
+		assert.equal(warm.parseEvery("0"), undefined);
 	},
 );
 

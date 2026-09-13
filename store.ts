@@ -81,6 +81,12 @@ export interface Store {
 	warm?: number | "all";
 	/** Epoch ms of the last warm-up, so window starts stay staggered. */
 	warmAt?: number;
+	/**
+	 * Override the gap between warm-ups. Default is 5h/N, which is the spacing
+	 * that keeps N windows evenly phased; anything shorter fills the pool faster
+	 * but bunches the expiries back together.
+	 */
+	warmEveryMs?: number;
 	accounts: Account[];
 }
 

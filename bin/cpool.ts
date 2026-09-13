@@ -16,7 +16,7 @@
  *   cpool disable <label>        toggle out of / into rotation
  *   cpool refresh [label]        force a token refresh (all, or one)
  *   cpool daemon [--once]        single-writer keep-alive + usage sweep
- *   cpool warm [off|1|2|all]     keep that many 5h windows already running
+ *   cpool warm [off|1|2|all] [30m|auto]  keep that many 5h windows running
  */
 
 import { existsSync, readFileSync } from "node:fs";
@@ -41,7 +41,12 @@ import {
 	resolveAccount,
 } from "../format.ts";
 import { attachCurrentLogin, toggleDisabled } from "../commands.ts";
-import { warmLimit, warmSpacingMs, warmTargets } from "../warm.ts";
+import {
+	parseEvery,
+	warmLimit,
+	warmSpacingMs,
+	warmTargets,
+} from "../warm.ts";
 
 const args = process.argv.slice(2);
 const command = (args[0] ?? "list").replace(/^--?/, "");
@@ -217,14 +222,24 @@ switch (command) {
 	}
 
 	case "warm": {
-		const want = target.toLowerCase();
+		// `warm [off|1|2|all] [30m|2h|auto]` — a count and an optional interval;
+		// neither is ever a row number.
+		const [want = "", every = ""] = target.toLowerCase().split(/\s+/);
+		const usage = "usage: cpool warm [off|1|2|all] [30m|2h|auto]";
 		if (want) {
 			const value =
 				want === "off" ? 0 : want === "all" ? ("all" as const) : Number(want);
 			if (value !== "all" && (!Number.isInteger(value) || value < 0))
-				die("usage: cpool warm [off|1|2|all]");
+				die(usage);
 			await mutateStore((s) => {
 				s.warm = value === 0 ? undefined : value;
+			});
+		}
+		if (every) {
+			const ms = every === "auto" ? undefined : parseEvery(every);
+			if (every !== "auto" && ms === undefined) die(usage);
+			await mutateStore((s) => {
+				s.warmEveryMs = ms;
 			});
 		}
 		const store = readStore();
@@ -237,7 +252,9 @@ switch (command) {
 		console.log(
 			`5h warm-up on for ${store.warm} account(s), one every ${relative(
 				warmSpacingMs(store, cache),
-			)} — not started yet: ${cold.join(", ") || "none"}`,
+			)}${store.warmEveryMs ? " (set)" : " (5h/N)"} — not started yet: ${
+				cold.join(", ") || "none"
+			}`,
 		);
 		break;
 	}
@@ -262,7 +279,7 @@ switch (command) {
 				"cpool disable <label>      toggle out of / into rotation",
 				"cpool refresh [label]      force a token refresh",
 				"cpool daemon [--once]      keep-alive + usage sweep",
-				"cpool warm [off|1|2|all]   keep 5h windows already running",
+				"cpool warm [off|1|2|all] [30m|auto]  keep 5h windows running",
 			].join("\n"),
 		);
 		if (command !== "help") process.exitCode = 1;

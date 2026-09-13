@@ -179,10 +179,19 @@ cpool warm          # show current setting and which windows are still cold
 cpool warm 2        # keep the top 2 unstarted windows running
 cpool warm all
 cpool warm off      # default
+cpool warm all 30m  # fill faster than the default 5h/N
+cpool warm all auto # back to 5h/N
 ```
 
 `1`/`2`/`all` are **counts, not row numbers** — targets are the top N of the
 same ranking the list uses.
+
+The default gap between warm-ups is **5h/N**, which is the spacing that keeps N
+windows evenly phased — with `all` over 4 accounts, one every 1h15m. Shortening
+it (`30m`) fills a cold pool faster, but windows opened close together expire
+close together, so the pool goes briefly all-cold instead of always holding one
+mid-window. It re-staggers itself over the next cycle. The sweep runs every
+~20m, so intervals below that are effectively "every sweep".
 
 This is the only request the extension makes that **spends quota**; everything
 else reads `/api/oauth/*`. Three deliberate limits:

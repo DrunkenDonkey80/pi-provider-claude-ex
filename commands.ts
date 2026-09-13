@@ -25,7 +25,7 @@ import {
 	resolveAccount,
 	sortAccountsForDisplay,
 } from "./format.ts";
-import { warmSpacingMs, warmTargets } from "./warm.ts";
+import { parseEvery, warmSpacingMs, warmTargets } from "./warm.ts";
 import { collectUsage, readUsage } from "./usage.ts";
 import { type Profile, fetchProfile } from "./oauth.ts";
 
@@ -494,11 +494,14 @@ export function setupCommands(pi: ExtensionAPI): void {
 
 	register("claude-pool-warm", {
 		description:
-			"Keep unstarted 5h windows already running, off by default (bare cycles off/1/2/all). Usage: /claude-pool-warm [off|1|2|all]",
+			"Keep unstarted 5h windows already running, off by default (bare cycles off/1/2/all). Usage: /claude-pool-warm [off|1|2|all] [30m|2h|auto]",
 		handler: async (args, ctx) => {
-			// Counts, never row numbers — no account is addressed positionally.
+			// A count and an optional interval. Never row numbers — no account is
+			// addressed positionally.
 			const cycle: (number | "all" | undefined)[] = [undefined, 1, 2, "all"];
-			const want = args.trim().toLowerCase();
+			const usage =
+				"Usage: /claude-pool-warm [off|1|2|all] [30m|2h|auto]";
+			const [want = "", every = ""] = args.trim().toLowerCase().split(/\s+/);
 			let next: number | "all" | undefined;
 			if (!want) {
 				const current = readStore().warm || undefined;
@@ -507,11 +510,17 @@ export function setupCommands(pi: ExtensionAPI): void {
 			else if (want === "all") next = "all";
 			else if (/^[1-9]\d*$/.test(want)) next = Number(want);
 			else {
-				ctx.ui.notify("Usage: /claude-pool-warm [off|1|2|all]", "warning");
+				ctx.ui.notify(usage, "warning");
+				return;
+			}
+			const everyMs = every === "auto" ? undefined : parseEvery(every);
+			if (every && every !== "auto" && everyMs === undefined) {
+				ctx.ui.notify(usage, "warning");
 				return;
 			}
 			await mutateStore((s) => {
 				s.warm = next;
+				if (every) s.warmEveryMs = everyMs;
 			});
 			if (next === undefined) {
 				ctx.ui.notify("5h warm-up OFF.", "info");
@@ -523,7 +532,9 @@ export function setupCommands(pi: ExtensionAPI): void {
 			ctx.ui.notify(
 				`5h warm-up ON for ${next} account(s), one every ${relative(
 					warmSpacingMs(store, cache),
-				)} — not started yet: ${cold.join(", ") || "none"}`,
+				)}${store.warmEveryMs ? " (set)" : " (5h/N)"} — not started yet: ${
+					cold.join(", ") || "none"
+				}`,
 				"info",
 			);
 		},
