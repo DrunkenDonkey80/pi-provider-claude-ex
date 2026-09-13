@@ -15,18 +15,25 @@ export interface AnthropicOAuthLoginCallbacks {
 	signal?: AbortSignal;
 }
 
-const CLIENT_ID = Buffer.from("OWQxYzI1MGEtZTYxYi00NGQ5LTg4ZWQtNTk0NGQxOTYyZjVl", "base64").toString("utf8");
+const CLIENT_ID = Buffer.from(
+	"OWQxYzI1MGEtZTYxYi00NGQ5LTg4ZWQtNTk0NGQxOTYyZjVl",
+	"base64",
+).toString("utf8");
 const AUTHORIZE_URL = "https://claude.ai/oauth/authorize";
 const TOKEN_URL = "https://platform.claude.com/v1/oauth/token";
 const CALLBACK_HOST = process.env.PI_OAUTH_CALLBACK_HOST || "127.0.0.1";
 const CALLBACK_PORT = 53692;
 const CALLBACK_PATH = "/callback";
 const REDIRECT_URI = `http://localhost:${CALLBACK_PORT}${CALLBACK_PATH}`;
-const SCOPES = "org:create_api_key user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload";
+const SCOPES =
+	"org:create_api_key user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload";
 
 type AuthorizationResult = { code: string; state: string };
 
-function parseAuthorizationInput(input: string): { code?: string; state?: string } {
+function parseAuthorizationInput(input: string): {
+	code?: string;
+	state?: string;
+} {
 	const value = input.trim();
 	if (!value) return {};
 	try {
@@ -117,7 +124,10 @@ async function startCallbackServer(expectedState: string): Promise<{
 	});
 }
 
-async function postJson(url: string, body: Record<string, unknown>): Promise<string> {
+async function postJson(
+	url: string,
+	body: Record<string, unknown>,
+): Promise<string> {
 	const response = await fetch(url, {
 		method: "POST",
 		headers: { "Content-Type": "application/json", Accept: "application/json" },
@@ -126,7 +136,9 @@ async function postJson(url: string, body: Record<string, unknown>): Promise<str
 	});
 	const responseBody = await response.text();
 	if (!response.ok) {
-		throw new Error(`HTTP request failed. status=${response.status}; url=${url}; body=${responseBody}`);
+		throw new Error(
+			`HTTP request failed. status=${response.status}; url=${url}; body=${responseBody}`,
+		);
 	}
 	return responseBody;
 }
@@ -147,16 +159,30 @@ async function exchangeAuthorizationCode(
 			code_verifier: verifier,
 		});
 	} catch (error) {
-		throw new Error(`Token exchange request failed. details=${formatErrorDetails(error)}`);
+		throw new Error(
+			`Token exchange request failed. details=${formatErrorDetails(error)}`,
+		);
 	}
-	let tokenData: { refresh_token?: string; access_token?: string; expires_in?: number };
+	let tokenData: {
+		refresh_token?: string;
+		access_token?: string;
+		expires_in?: number;
+	};
 	try {
 		tokenData = JSON.parse(responseBody) as typeof tokenData;
 	} catch (error) {
-		throw new Error(`Token exchange returned invalid JSON. body=${responseBody}; details=${formatErrorDetails(error)}`);
+		throw new Error(
+			`Token exchange returned invalid JSON. body=${responseBody}; details=${formatErrorDetails(error)}`,
+		);
 	}
-	if (!tokenData.refresh_token || !tokenData.access_token || !tokenData.expires_in) {
-		throw new Error("Token exchange response did not contain complete OAuth credentials.");
+	if (
+		!tokenData.refresh_token ||
+		!tokenData.access_token ||
+		!tokenData.expires_in
+	) {
+		throw new Error(
+			"Token exchange response did not contain complete OAuth credentials.",
+		);
 	}
 	return {
 		type: "oauth",
@@ -187,7 +213,8 @@ export async function loginAnthropicOAuth(
 		});
 		callbacks.onAuth({
 			url: `${AUTHORIZE_URL}?${authParams.toString()}`,
-			instructions: "Complete login in your browser. If the browser is on another machine, paste the final redirect URL here.",
+			instructions:
+				"Complete login in your browser. If the browser is on another machine, paste the final redirect URL here.",
 		});
 		const manualPromise = callbacks
 			.onManualCodeInput()
@@ -201,18 +228,25 @@ export async function loginAnthropicOAuth(
 			});
 		const result = await server.waitForCode();
 		if (manualError) throw manualError;
-		const parsed = result ?? (manualInput ? parseAuthorizationInput(manualInput) : {});
-		if (parsed.state && parsed.state !== verifier) throw new Error("OAuth state mismatch");
+		const parsed =
+			result ?? (manualInput ? parseAuthorizationInput(manualInput) : {});
+		if (parsed.state && parsed.state !== verifier)
+			throw new Error("OAuth state mismatch");
 		if (!parsed.code) {
 			await manualPromise;
 			if (manualError) throw manualError;
 			const fallback = parseAuthorizationInput(manualInput ?? "");
-			if (fallback.state && fallback.state !== verifier) throw new Error("OAuth state mismatch");
+			if (fallback.state && fallback.state !== verifier)
+				throw new Error("OAuth state mismatch");
 			parsed.code = fallback.code;
 		}
 		if (!parsed.code) throw new Error("Missing authorization code");
 		callbacks.onProgress?.("Exchanging authorization code for tokens...");
-		return exchangeAuthorizationCode(parsed.code, parsed.state ?? verifier, verifier);
+		return exchangeAuthorizationCode(
+			parsed.code,
+			parsed.state ?? verifier,
+			verifier,
+		);
 	} finally {
 		server.server.close();
 	}
@@ -267,7 +301,11 @@ export async function refreshGrant(refresh: string): Promise<RefreshOutcome> {
 		return { error: "transient" };
 	}
 	if (!response.ok) {
-		if (response.status === 400 || response.status === 401 || response.status === 403) {
+		if (
+			response.status === 400 ||
+			response.status === 401 ||
+			response.status === 403
+		) {
 			let err: unknown;
 			try {
 				err = (JSON.parse(body) as { error?: unknown }).error;
@@ -364,8 +402,18 @@ export async function fetchProfile(access: string): Promise<Profile> {
 	});
 	if (!response.ok) throw new UsageHttpError(response.status);
 	const data = (await response.json()) as {
-		account?: { uuid?: string; email?: string; has_claude_max?: boolean; has_claude_pro?: boolean };
-		organization?: { uuid?: string; name?: string; organization_type?: string; seat_tier?: string };
+		account?: {
+			uuid?: string;
+			email?: string;
+			has_claude_max?: boolean;
+			has_claude_pro?: boolean;
+		};
+		organization?: {
+			uuid?: string;
+			name?: string;
+			organization_type?: string;
+			seat_tier?: string;
+		};
 	};
 	const org = data.organization;
 	// organization_type is the reliable per-subscription discriminator
@@ -373,7 +421,11 @@ export async function fetchProfile(access: string): Promise<Profile> {
 	// flags describe the person, not the subscription this token bills to.
 	const plan =
 		org?.organization_type?.replace(/^claude_/, "") ??
-		(data.account?.has_claude_max ? "max" : data.account?.has_claude_pro ? "pro" : undefined);
+		(data.account?.has_claude_max
+			? "max"
+			: data.account?.has_claude_pro
+				? "pro"
+				: undefined);
 	return {
 		uuid: data.account?.uuid,
 		orgUuid: org?.uuid,
@@ -402,8 +454,14 @@ export async function fetchUsage(access: string): Promise<UsageSnapshot> {
 	return parseUsage((await response.json()) as Record<string, unknown>);
 }
 
-/** Cheapest model available to a subscription token. */
-const WARM_MODEL = "claude-3-5-haiku-latest";
+/**
+ * Cheapest model a subscription token actually accepts — verified against the
+ * API, not the obvious guess: the 3.5-haiku ids (dated and `-latest` alike)
+ * both return 404 `not_found_error` here with an OAuth token. If a future
+ * deprecation 404s this one, the warm-up logs `http-404` and retries on the
+ * next sweep rather than looping.
+ */
+const WARM_MODEL = "claude-haiku-4-5-20251001";
 
 /**
  * Smallest billable request there is: one token in, one token out. Its only

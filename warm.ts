@@ -29,12 +29,7 @@
 
 import { sortAccountsForDisplay } from "./format.ts";
 import { UsageHttpError, warmSession } from "./oauth.ts";
-import {
-	type Account,
-	type Store,
-	mutateStore,
-	readStore,
-} from "./store.ts";
+import { type Account, type Store, mutateStore, readStore } from "./store.ts";
 import { type UsageCache, collectUsage, readUsage } from "./usage.ts";
 
 const WINDOW_5H = 5 * 3_600_000;
@@ -116,15 +111,28 @@ export async function runWarm(
 	if (!target) return undefined;
 	const spacing = warmSpacingMs(store, cache, now);
 
+	let previous: number | undefined;
 	const claimed = await mutateStore((s) => {
 		if ((s.warmAt ?? 0) + spacing > now) return false;
+		previous = s.warmAt;
 		s.warmAt = now;
 		return true;
 	});
 	if (!claimed) return undefined;
 
+	// A warm-up that never happened must not hold the slot: releasing it lets
+	// the next sweep retry instead of waiting out the full 5h/N gap. Only the
+	// claim we made is released, so a newer claim by another process survives.
+	const release = () =>
+		mutateStore((s) => {
+			if (s.warmAt === now) s.warmAt = previous;
+		});
+
 	const token = await getToken(target.label);
-	if (!token) return undefined;
+	if (!token) {
+		await release();
+		return undefined;
+	}
 	try {
 		await warmSession(token);
 		log(`warmed 5h window on ${target.label}`);
@@ -134,6 +142,7 @@ export async function runWarm(
 				e instanceof UsageHttpError ? `http-${e.status}` : "network"
 			}`,
 		);
+		await release();
 		return undefined;
 	}
 	// Confirm the window actually started, and stop a stale cache re-warming it.
