@@ -41,12 +41,7 @@ import {
 	resolveAccount,
 } from "../format.ts";
 import { attachCurrentLogin, toggleDisabled } from "../commands.ts";
-import {
-	parseEvery,
-	warmLimit,
-	warmSpacingMs,
-	warmTargets,
-} from "../warm.ts";
+import { parseEvery, warmLimit, warmSpacingMs, warmTargets } from "../warm.ts";
 
 const args = process.argv.slice(2);
 const command = (args[0] ?? "list").replace(/^--?/, "");
@@ -229,8 +224,7 @@ switch (command) {
 		if (want) {
 			const value =
 				want === "off" ? 0 : want === "all" ? ("all" as const) : Number(want);
-			if (value !== "all" && (!Number.isInteger(value) || value < 0))
-				die(usage);
+			if (value !== "all" && (!Number.isInteger(value) || value < 0)) die(usage);
 			await mutateStore((s) => {
 				s.warm = value === 0 ? undefined : value;
 			});

@@ -499,8 +499,7 @@ export function setupCommands(pi: ExtensionAPI): void {
 			// A count and an optional interval. Never row numbers — no account is
 			// addressed positionally.
 			const cycle: (number | "all" | undefined)[] = [undefined, 1, 2, "all"];
-			const usage =
-				"Usage: /claude-pool-warm [off|1|2|all] [30m|2h|auto]";
+			const usage = "Usage: /claude-pool-warm [off|1|2|all] [30m|2h|auto]";
 			const [want = "", every = ""] = args.trim().toLowerCase().split(/\s+/);
 			let next: number | "all" | undefined;
 			if (!want) {

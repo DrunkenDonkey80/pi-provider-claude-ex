@@ -103,9 +103,7 @@ export function warmSpacingMs(
  * NaN interval.
  */
 export function parseEvery(text: string): number | undefined {
-	const match = /^(\d+(?:\.\d+)?)\s*(m|min|h)?$/.exec(
-		text.trim().toLowerCase(),
-	);
+	const match = /^(\d+(?:\.\d+)?)\s*(m|min|h)?$/.exec(text.trim().toLowerCase());
 	if (!match) return undefined;
 	const value = Number(match[1]);
 	if (!(value > 0)) return undefined;
