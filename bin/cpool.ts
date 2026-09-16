@@ -40,7 +40,12 @@ import {
 	relative,
 	resolveAccount,
 } from "../format.ts";
-import { attachCurrentLogin, toggleDisabled } from "../commands.ts";
+import {
+	applySync,
+	attachCurrentLogin,
+	syncStatus,
+	toggleDisabled,
+} from "../commands.ts";
 import { parseEvery, warmLimit, warmSpacingMs, warmTargets } from "../warm.ts";
 
 const args = process.argv.slice(2);
@@ -253,6 +258,13 @@ switch (command) {
 		break;
 	}
 
+	case "sync": {
+		// `sync` alone reports; a url/on/off/now applies. Same helper the slash
+		// command and its menu use, so all three stay in step.
+		console.log(target ? await applySync(target) : syncStatus());
+		break;
+	}
+
 	case "daemon": {
 		console.log(
 			`cpool daemon: pid ${process.pid}, keep-alive every ${relative(KEEPALIVE_MS)} per idle account. Ctrl-C to stop.`,
@@ -270,6 +282,7 @@ switch (command) {
 				"cpool auto [on|off]        automatic best-account selection",
 				"cpool add <label>          snapshot auth.json's /login account",
 				"cpool remove <label>",
+				"cpool sync [url|on|off|now]  share logins with your other machines",
 				"cpool disable <label>      toggle out of / into rotation",
 				"cpool refresh [label]      force a token refresh",
 				"cpool daemon [--once]      keep-alive + usage sweep",

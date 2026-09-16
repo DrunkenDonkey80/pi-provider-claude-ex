@@ -19,6 +19,7 @@ import {
 	AGENT_DIR,
 	DAEMON_PATH,
 	type Store,
+	type SyncConfig,
 	findAccount,
 	mutateStore,
 	readJson,
@@ -39,6 +40,15 @@ import {
 	switchScore,
 } from "./usage.ts";
 import { runWarm } from "./warm.ts";
+import {
+	credOf,
+	pullAll,
+	pullCred,
+	pushAll,
+	pushCred,
+	syncOn,
+	syncReady,
+} from "./sync.ts";
 import { join } from "node:path";
 
 /** Refresh the access token this long before it expires. */
@@ -183,6 +193,52 @@ async function applyRefreshError(
 }
 
 /**
+ * Take a credential another machine published, instead of POSTing our own.
+ *
+ * This is what makes a shared pool work: refresh tokens are single-use, so two
+ * machines refreshing the same lineage means one of them ends up holding a
+ * revoked token. Adopting a live access token costs no grant and cannot lose
+ * that race.
+ *
+ * `mode` is what counts as better:
+ *   - `newer`: a later access expiry, i.e. a later rotation (the normal path)
+ *   - `any`:   any different lineage at all — for the `invalid_grant` rescue,
+ *              where ours is already dead so anything else is worth trying
+ *
+ * Best-effort throughout: a missing repo or a wrong key just returns undefined
+ * and the caller refreshes the ordinary way.
+ */
+async function adoptRemote(
+	label: string,
+	current: Account,
+	mode: "newer" | "any",
+	config: SyncConfig,
+): Promise<Account | undefined> {
+	const remote = await pullCred(label, config);
+	if (!remote || remote.refresh === current.refresh) return undefined;
+	if (mode === "newer") {
+		// Must beat ours AND actually be usable, or adopting solves nothing.
+		if (remote.expires <= current.expires) return undefined;
+		if (remote.expires <= Date.now() + ACCESS_BUFFER_MS) return undefined;
+	}
+	const saved = await mutateStore((store) => {
+		const account = findAccount(store, label);
+		if (!account) return undefined;
+		account.refresh = remote.refresh;
+		account.access = remote.access;
+		account.expires = remote.expires;
+		if (remote.refreshExpires) account.refreshExpires = remote.refreshExpires;
+		account.lastGrantAt = remote.at;
+		account.strikes = 0;
+		account.dead = false; // a newer generation proves the lineage is alive
+		return account;
+	});
+	invalidateSnapshot();
+	log(`adopted ${label} from ${remote.by} (sync)`);
+	return saved;
+}
+
+/**
  * Make sure `label` has a usable access token. Returns the current account.
  *
  * `force` is for the 401 path (the server rejected a token we thought was
@@ -216,10 +272,26 @@ export async function ensureFresh(
 				if (!opts.force && current.expires > Date.now() + ACCESS_BUFFER_MS)
 					return current;
 
+				// Another machine may already have rotated this lineage. Taking its
+				// token costs no grant and cannot lose the single-use race.
+				const config = readStore().sync;
+				if (syncOn(config)) {
+					const adopted = await adoptRemote(label, current, "newer", config);
+					if (adopted) return adopted;
+				}
+
 				const outcome = await withClaudeCodeRefreshLock(() =>
 					refreshGrant(current.refresh),
 				);
-				if (!outcome.credential) return applyRefreshError(label, outcome.error);
+				if (!outcome.credential) {
+					// `invalid_grant` means someone else spent this generation. If they
+					// published the successor, this is a hiccup rather than a death.
+					if (outcome.error === "invalid_grant" && syncOn(config)) {
+						const rescued = await adoptRemote(label, current, "any", config);
+						if (rescued) return rescued;
+					}
+					return applyRefreshError(label, outcome.error);
+				}
 
 				const next = {
 					refresh: outcome.credential.refresh,
@@ -242,6 +314,14 @@ export async function ensureFresh(
 				stashDrop(label, next.refresh);
 				invalidateSnapshot();
 				log(`refreshed ${label} (exp ${new Date(next.expires).toISOString()})`);
+
+				// Publish so the other machines can ride this token instead of
+				// spending their own copy of a lineage we just rotated away.
+				if (saved && syncOn(config)) {
+					const beatUs = await pushCred(credOf(saved), config);
+					if (beatUs)
+						return (await adoptRemote(label, saved, "newer", config)) ?? saved;
+				}
 				return saved;
 			},
 			{ timeoutMs: 45_000, staleMs: 120_000 },
@@ -250,6 +330,37 @@ export async function ensureFresh(
 		log(`refresh lock busy for ${label}: ${(e as Error).message}`);
 		return findAccount(readStore(), label); // another holder is doing it
 	}
+}
+
+/**
+ * Reconcile every account with the shared repo in one pass: adopt whatever is
+ * newer there, publish whatever is newer here. Used by the menu's "sync now";
+ * the refresh path syncs on its own.
+ */
+export async function syncNow(): Promise<{
+	adopted: number;
+	pushed: number;
+}> {
+	const config = readStore().sync;
+	if (!syncReady(config)) return { adopted: 0, pushed: 0 };
+	const accounts = readStore().accounts;
+	const remote = await pullAll(
+		accounts.map((a) => a.label),
+		config,
+	);
+
+	let adopted = 0;
+	const mine: ReturnType<typeof credOf>[] = [];
+	for (const account of accounts) {
+		const theirs = remote.get(account.label);
+		if (theirs && theirs.expires > account.expires) {
+			// Their rotation is later than ours, so ours is the spent generation.
+			if (await adoptRemote(account.label, account, "any", config)) adopted++;
+		} else if (!theirs || theirs.expires < account.expires) {
+			mine.push(credOf(account));
+		}
+	}
+	return { adopted, pushed: await pushAll(mine, config) };
 }
 
 // ─── caps / cooldown ────────────────────────────────────────────────────────

@@ -7,8 +7,10 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
 	AGENT_DIR,
 	type Account,
+	type SyncConfig,
 	mutateStore,
 	parseExport,
+	parseSyncConfig,
 	readStore,
 	writeJsonAtomic,
 } from "./store.ts";
@@ -18,7 +20,9 @@ import {
 	invalidateSnapshot,
 	pickActive,
 	setActive,
+	syncNow,
 } from "./pool.ts";
+import { checkRepo, newKey, syncReady } from "./sync.ts";
 import {
 	accountLine,
 	relative,
@@ -401,8 +405,11 @@ export function setupCommands(pi: ExtensionAPI): void {
 				ctx.ui.notify("No pooled accounts to export.", "warning");
 				return;
 			}
-			writeJsonAtomic(EXPORT_PATH, { accounts });
-			const copied = copyToClipboard(JSON.stringify({ accounts }, null, 2));
+			// The sync repo+key ride along: one export, and the other machine is
+			// wired to the shared repo without retyping a 64-char secret.
+			const payload = { accounts, sync: readStore().sync };
+			writeJsonAtomic(EXPORT_PATH, payload);
+			const copied = copyToClipboard(JSON.stringify(payload, null, 2));
 			ctx.ui.notify(
 				`Exported ${accounts.length} account(s). This holds refresh tokens — treat it like a password.\n${EXPORT_PATH}${
 					copied ? "\nContents copied to the clipboard." : ""
@@ -434,6 +441,11 @@ export function setupCommands(pi: ExtensionAPI): void {
 				ctx.ui.notify(`Import failed: ${(e as Error).message}`, "warning");
 				return;
 			}
+			const syncConfig = parseSyncConfig(
+				answer.startsWith("{") || answer.startsWith("[")
+					? answer
+					: readFileSync(answer.replace(/^["']|["']$/g, ""), "utf-8"),
+			);
 			await mutateStore((store) => {
 				for (const account of imported) {
 					const i = store.accounts.findIndex((a) => a.label === account.label);
@@ -442,6 +454,7 @@ export function setupCommands(pi: ExtensionAPI): void {
 					if (i >= 0) store.accounts[i] = { ...store.accounts[i], ...account };
 					else store.accounts.push(account);
 				}
+				if (syncConfig) store.sync = syncConfig;
 				if (!store.active) store.active = pickActive(store);
 			});
 			invalidateSnapshot();
@@ -492,6 +505,89 @@ export function setupCommands(pi: ExtensionAPI): void {
 		},
 	});
 
+	register("claude-pool-sync", {
+		description:
+			"Share logins with your other machines through a private git repo. Usage: /claude-pool-sync [<git-url>|on|off|now]",
+		handler: async (args, ctx) => {
+			const arg = args.trim();
+			if (arg) {
+				ctx.ui.notify(await applySync(arg), "info");
+				return;
+			}
+			if (!ctx.ui.custom) {
+				ctx.ui.notify(
+					`${syncStatus()}\nUsage: /claude-pool-sync <git-url> | on | off | now`,
+					"info",
+				);
+				return;
+			}
+			const { Container, SelectList, Text } = await import(
+				"@earendil-works/pi-tui"
+			);
+			// Stays up after an action, like the account menu: set the url, flip it
+			// on, sync once, all without reopening.
+			for (;;) {
+				const config = readStore().sync;
+				const rows = [
+					{ value: "url", label: `Repo   ${config?.url || "(not set)"}` },
+					{
+						value: "toggle",
+						label: `Sync   ${syncReady(config) ? (config.on === false ? "OFF" : "ON") : "needs a repo url"}`,
+					},
+					{ value: "now", label: "Sync now (pull newer, publish ours)" },
+				];
+				const pick = await ctx.ui.custom<string | null>(
+					(tui, theme, _kb, done) => {
+						const list = new SelectList(rows, rows.length, {
+							selectedPrefix: (t: string) => theme.fg("accent", t),
+							selectedText: (t: string) => theme.fg("accent", t),
+							description: (t: string) => theme.fg("muted", t),
+							scrollInfo: (t: string) => theme.fg("dim", t),
+							noMatch: (t: string) => theme.fg("warning", t),
+						});
+						list.onSelect = (item: { value: string }) => done(item.value);
+						list.onCancel = () => done(null);
+						const box = new Container();
+						box.addChild(
+							new Text(theme.fg("accent", theme.bold("Login sync")), 1, 0),
+						);
+						box.addChild(list);
+						box.addChild(
+							new Text(
+								theme.fg(
+									"dim",
+									"A private repo, one encrypted file per account. Export carries the key.",
+								),
+								1,
+								0,
+							),
+						);
+						return {
+							render: (w: number) => box.render(w),
+							invalidate: () => box.invalidate(),
+							handleInput: (data: string) => {
+								list.handleInput(data);
+								tui.requestRender();
+							},
+						};
+					},
+				);
+				if (!pick) return; // Esc
+				if (pick === "url") {
+					const url = (
+						(await ctx.ui.input?.(
+							"Private git repo (git@github.com:you/claude-pool.git):",
+							config?.url ?? "",
+						)) ?? ""
+					).trim();
+					if (url) ctx.ui.notify(await applySync(url), "info");
+				} else {
+					ctx.ui.notify(await applySync(pick), "info");
+				}
+			}
+		},
+	});
+
 	register("claude-pool-warm", {
 		description:
 			"Keep unstarted 5h windows already running, off by default (bare cycles off/1/2/all). Usage: /claude-pool-warm [off|1|2|all] [30m|2h|auto]",
@@ -538,6 +634,44 @@ export function setupCommands(pi: ExtensionAPI): void {
 			);
 		},
 	});
+}
+
+export function syncStatus(): string {
+	const config = readStore().sync;
+	if (!syncReady(config)) return "Login sync: not set up.";
+	return `Login sync: ${config.on === false ? "OFF" : "ON"} → ${config.url}`;
+}
+
+/**
+ * Apply one sync argument — a repo url, `on`, `off`, or `now` — and return the
+ * line to show. Shared by the slash command, its menu, and `cpool sync`.
+ */
+export async function applySync(arg: string): Promise<string> {
+	const word = arg.toLowerCase();
+	if (word === "now") {
+		if (!syncReady(readStore().sync)) return "No repo set — add one first.";
+		const { adopted, pushed } = await syncNow();
+		return `Synced: adopted ${adopted}, published ${pushed}.`;
+	}
+	if (word === "on" || word === "off") {
+		if (!syncReady(readStore().sync)) return "No repo set — add one first.";
+		await mutateStore((store) => {
+			if (store.sync) store.sync.on = word === "on";
+		});
+		return `Login sync ${word.toUpperCase()}.`;
+	}
+	// Anything else is a git url. A key is minted only when there is none:
+	// changing it orphans every file already published to the repo.
+	const config = await mutateStore((store): SyncConfig => {
+		store.sync = { url: arg, key: store.sync?.key ?? newKey(), on: true };
+		return store.sync;
+	});
+	try {
+		const found = await checkRepo(config);
+		return `Login sync ON → ${arg}\n${found} account file(s) already in the repo.\nRun /claude-pool-export and import that on the other machines — it carries the key.`;
+	} catch (e) {
+		return `Saved, but cloning failed: ${(e as Error).message.split("\n")[0]}`;
+	}
 }
 
 /** Drop an account from the pool (shared by /claude-pool-remove and the menu). */

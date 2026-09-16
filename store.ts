@@ -64,8 +64,21 @@ export interface Account {
 	strikes?: number;
 }
 
+/**
+ * Shared-repo credential sync. `key` is the AES secret every machine must
+ * hold: it travels in the export, never in the repo.
+ */
+export interface SyncConfig {
+	url: string;
+	key: string;
+	/** Absent/true = on. Off keeps the url+key so it can be re-enabled. */
+	on?: boolean;
+}
+
 export interface Store {
 	enabled?: boolean;
+	/** Push/pull credentials through a git repo shared with other machines. */
+	sync?: SyncConfig;
 	/** Label of the pinned active account (sticky across restarts). */
 	active?: string;
 	/** Re-pick the best account in the background. Default ON (undefined = on). */
@@ -289,6 +302,21 @@ export function parseExport(text: string): Account[] {
 	if (!valid.length)
 		throw new Error("no accounts with a label and refresh token");
 	return valid;
+}
+
+/**
+ * Sync setup out of an export's text, if it carried one. Undefined rather than
+ * throwing: an export written before sync existed is still a valid export.
+ */
+export function parseSyncConfig(text: string): SyncConfig | undefined {
+	try {
+		const sync = (JSON.parse(text) as { sync?: SyncConfig })?.sync;
+		return typeof sync?.url === "string" && typeof sync.key === "string"
+			? { url: sync.url, key: sync.key, on: sync.on !== false }
+			: undefined;
+	} catch {
+		return undefined;
+	}
 }
 
 export const findAccount = (store: Store, label: string): Account | undefined =>

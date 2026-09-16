@@ -48,6 +48,7 @@ generation — which is what actually keeps a login alive.
 /claude-pool-export          write the logins to a portable file + clipboard
 /claude-pool-import [path|json]  load them on another machine
 /claude-pool-auto            toggle automatic account selection (on by default)
+/claude-pool-sync [url|on|off|now]  share logins with your other machines
 /claude-pool-warm [off|1|2|all]   keep unstarted 5h windows running (off)
 ```
 
@@ -185,6 +186,53 @@ cpool warm all auto # back to 5h/N
 
 `1`/`2`/`all` are **counts, not row numbers** — targets are the top N of the
 same ranking the list uses.
+
+## Sharing logins with another machine
+
+Exporting copies a *snapshot*. Anthropic's refresh tokens are single-use, so
+once two machines hold the same one, whichever refreshes first revokes the
+other's copy — the second machine then shows every account dead with
+`OAuth access token has been revoked`. Re-exporting only restarts the race.
+
+`/claude-pool-sync` fixes that by sharing the **access** token (valid for
+hours) through a private git repo. A machine that needs one pulls it instead of
+POSTing, so only one machine per rotation ever calls the token endpoint.
+
+```sh
+/claude-pool-sync                     # menu: set repo, on/off, sync now
+/claude-pool-sync git@github.com:you/claude-pool.git
+/claude-pool-sync off
+/claude-pool-sync now
+
+cpool sync [url|on|off|now]           # same thing from the CLI
+```
+
+Setup, once:
+
+1. Make an **empty private repo** on GitHub.
+2. `/claude-pool-sync <its git url>` here — this mints the encryption key.
+3. `/claude-pool-export`, carry that to the other machine, `/claude-pool-import`.
+   The export carries the repo url **and the key**, so the other machine is
+   wired up by the import alone.
+
+After that both machines pull and publish on their own.
+
+How it stays consistent:
+
+- **one encrypted file per account**, so two machines rotating two different
+  accounts touch two different paths and cannot conflict
+- **`expires` is the version** — a rotation always yields a later access
+  expiry, so "newest wins" needs no counter
+- **file names are keyed hashes**, so a repo listing leaks no account emails
+- on `invalid_grant` the account is no longer killed outright: it pulls first,
+  and only dies if the repo has nothing newer
+
+Races are not impossible — two machines can still POST in the same second — but
+they stop being fatal: the loser adopts the winner's credential.
+
+The repo holds **encrypted bearer tokens**. Keep it private, and keep the key
+out of it (the key only ever travels in an export). Sync failures are
+best-effort and never block a refresh; with sync off nothing changes.
 
 The default gap between warm-ups is **5h/N**, which is the spacing that keeps N
 windows evenly phased — with `all` over 4 accounts, one every 1h15m. Shortening

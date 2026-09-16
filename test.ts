@@ -24,6 +24,7 @@ const { parseUsage } = await import("./oauth.ts");
 const usage = await import("./usage.ts");
 const format = await import("./format.ts");
 const warm = await import("./warm.ts");
+const sync = await import("./sync.ts");
 
 const results: string[] = [];
 const check = async (name: string, fn: () => Promise<void> | void) => {
@@ -961,6 +962,62 @@ await check(
 		assert.equal(warm.parseEvery("0"), undefined);
 	},
 );
+
+// 12. Credentials leave this machine when sync is on, so the blob must be
+//     unreadable without the key and the file NAME must not out the account.
+await check("synced credentials are sealed and anonymous on disk", () => {
+	const key = sync.newKey();
+	const other = sync.newKey();
+	assert.equal(key.length, 64, "256-bit key, hex");
+
+	const cred = {
+		label: "flex@datecs.bg",
+		refresh: "rt-secret",
+		access: "at-secret",
+		expires: 123,
+		at: 1,
+		by: "desktop",
+	};
+	const sealed = sync.seal(cred, key);
+	assert.deepEqual(sync.open(sealed, key), cred);
+	// Wrong key must fail closed, not throw: a stale key on one machine would
+	// otherwise crash every refresh instead of falling back to a normal grant.
+	assert.equal(sync.open(sealed, other), undefined);
+	assert.equal(sync.open("not-base64-at-all", key), undefined);
+	assert.ok(!sealed.includes("secret"), "ciphertext leaks the token");
+
+	const path = sync.credPath(cred.label, key);
+	assert.ok(!path.includes("datecs"), `file name leaks the account: ${path}`);
+	assert.equal(path, sync.credPath(cred.label, key), "name must be stable");
+	assert.notEqual(
+		path,
+		sync.credPath(cred.label, other),
+		"name is keyed, so two pools never collide",
+	);
+});
+
+// 13. The export is how a second machine gets wired up: it carries the repo and
+//     the key, or the whole scheme needs a 64-char secret typed by hand.
+await check("an export carries the sync setup, and older exports still load", () => {
+	const payload = JSON.stringify({
+		accounts: [{ label: "a", refresh: "rt-a" }],
+		sync: { url: "git@github.com:me/pool.git", key: "ab".repeat(32) },
+	});
+	const config = store.parseSyncConfig(payload);
+	assert.equal(config?.url, "git@github.com:me/pool.git");
+	assert.equal(config?.on, true, "an exported setup arrives switched on");
+	assert.equal(store.parseExport(payload).length, 1, "accounts still parse");
+
+	// Pre-sync exports, and half-written ones, must not throw on import.
+	assert.equal(store.parseSyncConfig('{"accounts":[]}'), undefined);
+	assert.equal(store.parseSyncConfig('{"sync":{"url":"x"}}'), undefined);
+	assert.equal(store.parseSyncConfig("not json"), undefined);
+
+	assert.equal(sync.syncOn(undefined), false);
+	assert.equal(sync.syncOn({ url: "u", key: "k" }), true, "absent on = on");
+	assert.equal(sync.syncOn({ url: "u", key: "k", on: false }), false);
+	assert.equal(sync.syncReady({ url: "u", key: "" }), false, "key required");
+});
 
 console.log(results.join("\n"));
 rmSync(dir, { recursive: true, force: true });
