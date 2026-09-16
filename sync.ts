@@ -204,7 +204,12 @@ export async function pushCred(
 					writeFileSync(file, `${seal(cred, config.key)}\n`, { mode: 0o600 });
 					git(["add", "--", file]);
 					try {
-						git(["commit", "--quiet", "-m", `sync ${credPath(cred.label, config.key).slice(9, 17)}`]);
+						git([
+							"commit",
+							"--quiet",
+							"-m",
+							`sync ${credPath(cred.label, config.key).slice(9, 17)}`,
+						]);
 					} catch {
 						return undefined; // identical content: already published
 					}

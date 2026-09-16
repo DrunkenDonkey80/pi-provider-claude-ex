@@ -219,12 +219,12 @@ After that both machines pull and publish on their own.
 
 How it stays consistent:
 
-- **one encrypted file per account**, so two machines rotating two different
+* **one encrypted file per account**, so two machines rotating two different
   accounts touch two different paths and cannot conflict
-- **`expires` is the version** — a rotation always yields a later access
+* **`expires` is the version** — a rotation always yields a later access
   expiry, so "newest wins" needs no counter
-- **file names are keyed hashes**, so a repo listing leaks no account emails
-- on `invalid_grant` the account is no longer killed outright: it pulls first,
+* **file names are keyed hashes**, so a repo listing leaks no account emails
+* on `invalid_grant` the account is no longer killed outright: it pulls first,
   and only dies if the repo has nothing newer
 
 Races are not impossible — two machines can still POST in the same second — but

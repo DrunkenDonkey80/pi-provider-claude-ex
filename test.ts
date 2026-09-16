@@ -998,26 +998,29 @@ await check("synced credentials are sealed and anonymous on disk", () => {
 
 // 13. The export is how a second machine gets wired up: it carries the repo and
 //     the key, or the whole scheme needs a 64-char secret typed by hand.
-await check("an export carries the sync setup, and older exports still load", () => {
-	const payload = JSON.stringify({
-		accounts: [{ label: "a", refresh: "rt-a" }],
-		sync: { url: "git@github.com:me/pool.git", key: "ab".repeat(32) },
-	});
-	const config = store.parseSyncConfig(payload);
-	assert.equal(config?.url, "git@github.com:me/pool.git");
-	assert.equal(config?.on, true, "an exported setup arrives switched on");
-	assert.equal(store.parseExport(payload).length, 1, "accounts still parse");
+await check(
+	"an export carries the sync setup, and older exports still load",
+	() => {
+		const payload = JSON.stringify({
+			accounts: [{ label: "a", refresh: "rt-a" }],
+			sync: { url: "git@github.com:me/pool.git", key: "ab".repeat(32) },
+		});
+		const config = store.parseSyncConfig(payload);
+		assert.equal(config?.url, "git@github.com:me/pool.git");
+		assert.equal(config?.on, true, "an exported setup arrives switched on");
+		assert.equal(store.parseExport(payload).length, 1, "accounts still parse");
 
-	// Pre-sync exports, and half-written ones, must not throw on import.
-	assert.equal(store.parseSyncConfig('{"accounts":[]}'), undefined);
-	assert.equal(store.parseSyncConfig('{"sync":{"url":"x"}}'), undefined);
-	assert.equal(store.parseSyncConfig("not json"), undefined);
+		// Pre-sync exports, and half-written ones, must not throw on import.
+		assert.equal(store.parseSyncConfig('{"accounts":[]}'), undefined);
+		assert.equal(store.parseSyncConfig('{"sync":{"url":"x"}}'), undefined);
+		assert.equal(store.parseSyncConfig("not json"), undefined);
 
-	assert.equal(sync.syncOn(undefined), false);
-	assert.equal(sync.syncOn({ url: "u", key: "k" }), true, "absent on = on");
-	assert.equal(sync.syncOn({ url: "u", key: "k", on: false }), false);
-	assert.equal(sync.syncReady({ url: "u", key: "" }), false, "key required");
-});
+		assert.equal(sync.syncOn(undefined), false);
+		assert.equal(sync.syncOn({ url: "u", key: "k" }), true, "absent on = on");
+		assert.equal(sync.syncOn({ url: "u", key: "k", on: false }), false);
+		assert.equal(sync.syncReady({ url: "u", key: "" }), false, "key required");
+	},
+);
 
 console.log(results.join("\n"));
 rmSync(dir, { recursive: true, force: true });

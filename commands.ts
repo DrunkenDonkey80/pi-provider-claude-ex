@@ -536,42 +536,38 @@ export function setupCommands(pi: ExtensionAPI): void {
 					},
 					{ value: "now", label: "Sync now (pull newer, publish ours)" },
 				];
-				const pick = await ctx.ui.custom<string | null>(
-					(tui, theme, _kb, done) => {
-						const list = new SelectList(rows, rows.length, {
-							selectedPrefix: (t: string) => theme.fg("accent", t),
-							selectedText: (t: string) => theme.fg("accent", t),
-							description: (t: string) => theme.fg("muted", t),
-							scrollInfo: (t: string) => theme.fg("dim", t),
-							noMatch: (t: string) => theme.fg("warning", t),
-						});
-						list.onSelect = (item: { value: string }) => done(item.value);
-						list.onCancel = () => done(null);
-						const box = new Container();
-						box.addChild(
-							new Text(theme.fg("accent", theme.bold("Login sync")), 1, 0),
-						);
-						box.addChild(list);
-						box.addChild(
-							new Text(
-								theme.fg(
-									"dim",
-									"A private repo, one encrypted file per account. Export carries the key.",
-								),
-								1,
-								0,
+				const pick = await ctx.ui.custom<string | null>((tui, theme, _kb, done) => {
+					const list = new SelectList(rows, rows.length, {
+						selectedPrefix: (t: string) => theme.fg("accent", t),
+						selectedText: (t: string) => theme.fg("accent", t),
+						description: (t: string) => theme.fg("muted", t),
+						scrollInfo: (t: string) => theme.fg("dim", t),
+						noMatch: (t: string) => theme.fg("warning", t),
+					});
+					list.onSelect = (item: { value: string }) => done(item.value);
+					list.onCancel = () => done(null);
+					const box = new Container();
+					box.addChild(new Text(theme.fg("accent", theme.bold("Login sync")), 1, 0));
+					box.addChild(list);
+					box.addChild(
+						new Text(
+							theme.fg(
+								"dim",
+								"A private repo, one encrypted file per account. Export carries the key.",
 							),
-						);
-						return {
-							render: (w: number) => box.render(w),
-							invalidate: () => box.invalidate(),
-							handleInput: (data: string) => {
-								list.handleInput(data);
-								tui.requestRender();
-							},
-						};
-					},
-				);
+							1,
+							0,
+						),
+					);
+					return {
+						render: (w: number) => box.render(w),
+						invalidate: () => box.invalidate(),
+						handleInput: (data: string) => {
+							list.handleInput(data);
+							tui.requestRender();
+						},
+					};
+				});
 				if (!pick) return; // Esc
 				if (pick === "url") {
 					const url = (
