@@ -18,12 +18,16 @@ export function relative(ms: number): string {
 const HOUR = 3_600_000;
 const DAY = 24 * HOUR;
 
-/** Fixed-width reset clock: align each number at its unit, not the whole text. */
+/**
+ * Fixed-width reset clock. Single-unit values are padded on the LEFT so the
+ * number lands in the same column as a two-unit row's smaller unit: `55m`
+ * under the `15m` of `2h 15m`, not floating out at the left edge.
+ */
 function clockRelative(ms: number): string {
 	const s = Math.max(0, Math.round(ms / 1000));
-	if (s < 90) return `${String(s).padStart(2)}s    `;
+	if (s < 90) return `    ${String(s).padStart(2)}s`;
 	const m = Math.round(s / 60);
-	if (m < 60) return `${String(m).padStart(2)}m    `;
+	if (m < 60) return `    ${String(m).padStart(2)}m`;
 	const h = Math.floor(m / 60);
 	if (h < 36) return `${String(h).padStart(2)}h ${String(m % 60).padStart(2)}m`;
 	return `${String(Math.floor(h / 24)).padStart(2)}d ${String(h % 24).padStart(2)}h`;
