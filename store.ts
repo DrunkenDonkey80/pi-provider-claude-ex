@@ -211,7 +211,21 @@ export function writeJsonAtomic(path: string, value: unknown): void {
 	mkdirSync(dirname(path), { recursive: true });
 	const tmp = `${path}.${process.pid}.tmp`;
 	writeFileSync(tmp, JSON.stringify(value, null, 2), { mode: 0o600 });
-	renameSync(tmp, path); // atomic: readers never see a half-written store
+	const deadline = Date.now() + 1_000;
+	for (;;) {
+		try {
+			renameSync(tmp, path); // atomic: readers never see a half-written store
+			return;
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException).code;
+			if (
+				!["EPERM", "EACCES", "EBUSY"].includes(code ?? "") ||
+				Date.now() >= deadline
+			)
+				throw error;
+			Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
+		}
+	}
 }
 
 // ─── successor stash ────────────────────────────────────────────────────────

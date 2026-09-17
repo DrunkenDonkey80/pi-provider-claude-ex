@@ -6,13 +6,14 @@
  */
 
 import assert from "node:assert/strict";
-import {
+import fs, {
 	mkdtempSync,
 	rmSync,
 	writeFileSync,
 	readFileSync,
 	existsSync,
 } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -65,6 +66,29 @@ await check("concurrent mutateStore keeps both writers' changes", async () => {
 	const after = store.readStore();
 	assert.equal(after.accounts.find((a) => a.label === "a")?.refresh, "rt-a-2");
 	assert.equal(after.accounts.find((a) => a.label === "b")?.refresh, "rt-b-2");
+});
+
+await check("atomic writes retry transient rename failures", () => {
+	const path = join(dir, "retry.json");
+	const renameSync = fs.renameSync;
+	let attempts = 0;
+	fs.renameSync = ((from, to) => {
+		if (++attempts < 3) {
+			const error = new Error("busy") as NodeJS.ErrnoException;
+			error.code = "EPERM";
+			throw error;
+		}
+		renameSync(from, to);
+	}) as typeof fs.renameSync;
+	syncBuiltinESMExports();
+	try {
+		store.writeJsonAtomic(path, { ok: true });
+	} finally {
+		fs.renameSync = renameSync;
+		syncBuiltinESMExports();
+	}
+	assert.equal(attempts, 3);
+	assert.equal(readFileSync(path, "utf8"), '{\n  "ok": true\n}');
 });
 
 // 2. A crash between the token POST and the store write must not lose the

@@ -121,7 +121,10 @@ function setupPool(pi: ExtensionAPI): void {
 	let sweep: ReturnType<typeof setTimeout> | undefined;
 	const scheduleSweep = (delay: number): void => {
 		sweep = setTimeout(() => {
-			if (!daemonAlive()) void tick();
+			if (!daemonAlive())
+				void tick().catch((error) =>
+					writeDebugLog({ stage: "pool", msg: `background sweep failed: ${error}` }),
+				);
 			scheduleSweep(TICK_MS + Math.random() * SWEEP_JITTER_MS);
 		}, delay);
 		sweep.unref?.(); // never keep short-lived CLI invocations alive
