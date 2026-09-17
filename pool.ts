@@ -41,6 +41,7 @@ import {
 } from "./usage.ts";
 import { runWarm } from "./warm.ts";
 import {
+	type SyncedCred,
 	credOf,
 	pullAll,
 	pullCred,
@@ -333,6 +334,33 @@ export async function ensureFresh(
 }
 
 /**
+ * Who to adopt and who to publish in one reconcile pass.
+ *
+ * `expires` is the version, but it only orders LIVE rotations. A dead lineage
+ * keeps the expiry of its last successful grant, which is usually later than
+ * whatever a healthy machine published — so ranking on expiry alone made a
+ * revoked token outrank the live copy, refuse to adopt, and then overwrite the
+ * repo with a credential that cannot be refreshed by anyone.
+ */
+export function syncPlan(
+	accounts: Account[],
+	remote: Map<string, SyncedCred>,
+): { adopt: Account[]; publish: Account[] } {
+	const adopt: Account[] = [];
+	const publish: Account[] = [];
+	for (const account of accounts) {
+		const theirs = remote.get(account.label);
+		// Dead: our refresh is spent, so anything published beats it — and ours
+		// must never be published at any expiry.
+		if (theirs && (account.dead || theirs.expires > account.expires))
+			adopt.push(account);
+		else if (!account.dead && (!theirs || theirs.expires < account.expires))
+			publish.push(account);
+	}
+	return { adopt, publish };
+}
+
+/**
  * Reconcile every account with the shared repo in one pass: adopt whatever is
  * newer there, publish whatever is newer here. Used by the menu's "sync now";
  * the refresh path syncs on its own.
@@ -349,18 +377,11 @@ export async function syncNow(): Promise<{
 		config,
 	);
 
+	const { adopt, publish } = syncPlan(accounts, remote);
 	let adopted = 0;
-	const mine: ReturnType<typeof credOf>[] = [];
-	for (const account of accounts) {
-		const theirs = remote.get(account.label);
-		if (theirs && theirs.expires > account.expires) {
-			// Their rotation is later than ours, so ours is the spent generation.
-			if (await adoptRemote(account.label, account, "any", config)) adopted++;
-		} else if (!theirs || theirs.expires < account.expires) {
-			mine.push(credOf(account));
-		}
-	}
-	return { adopted, pushed: await pushAll(mine, config) };
+	for (const account of adopt)
+		if (await adoptRemote(account.label, account, "any", config)) adopted++;
+	return { adopted, pushed: await pushAll(publish.map(credOf), config) };
 }
 
 // ─── caps / cooldown ────────────────────────────────────────────────────────

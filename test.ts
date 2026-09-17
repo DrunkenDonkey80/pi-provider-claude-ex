@@ -987,6 +987,46 @@ await check(
 	},
 );
 
+// 11b. A dead lineage keeps the expiry of its last good grant, which is often
+//      LATER than what a healthy machine published. Ranking on expiry alone
+//      made the revoked token win: the dead box adopted nothing and then
+//      overwrote the repo with credentials nobody can refresh.
+await check("sync never publishes a dead lineage", async () => {
+	const pool = await import("./pool.ts");
+	const theirs = (label: string, expires: number) => ({
+		label,
+		refresh: `rt-${label}-remote`,
+		access: `at-${label}-remote`,
+		expires,
+		at: 1,
+		by: "other",
+	});
+	const plan = pool.syncPlan(
+		[
+			{ ...acct("dead"), expires: 9_000, dead: true },
+			{ ...acct("live"), expires: 9_000 },
+			{ ...acct("behind"), expires: 1_000 },
+			{ ...acct("unpublished"), expires: 9_000 },
+			{ ...acct("dead-unpublished"), expires: 9_000, dead: true },
+		] as never,
+		new Map([
+			["dead", theirs("dead", 1_000)],
+			["live", theirs("live", 1_000)],
+			["behind", theirs("behind", 9_000)],
+		]),
+	);
+	assert.deepEqual(
+		plan.publish.map((a) => a.label),
+		["live", "unpublished"],
+		"a dead lineage must never be published, however late its expiry",
+	);
+	assert.deepEqual(
+		plan.adopt.map((a) => a.label),
+		["dead", "behind"],
+		"dead takes anything published; live takes only a later rotation",
+	);
+});
+
 // 12. Credentials leave this machine when sync is on, so the blob must be
 //     unreadable without the key and the file NAME must not out the account.
 await check("synced credentials are sealed and anonymous on disk", () => {
