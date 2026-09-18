@@ -22,7 +22,7 @@ import {
 	setActive,
 	syncNow,
 } from "./pool.ts";
-import { checkRepo, newKey, syncReady } from "./sync.ts";
+import { checkRepo, newKey, syncOn, syncReady } from "./sync.ts";
 import {
 	accountLine,
 	relative,
@@ -345,8 +345,17 @@ export function setupCommands(pi: ExtensionAPI): void {
 					);
 					return;
 				}
-				if (pick.act === "refresh") await refreshVisibleUsage();
-				else if (pick.act === "toggle") await toggleDisabled(pick.label);
+				if (pick.act === "refresh") {
+					// A dead login may only be dead locally. Pull before refreshing, so
+					// the re-shown menu reflects the rescue (the loop re-presents itself).
+					const store = readStore();
+					if (store.accounts.some((a) => a.dead) && syncOn(store.sync)) {
+						const { adopted } = await syncNow();
+						if (adopted)
+							ctx.ui.notify(`sync rescued ${adopted} dead account(s)`, "info");
+					}
+					await refreshVisibleUsage();
+				} else if (pick.act === "toggle") await toggleDisabled(pick.label);
 				else if (
 					!ctx.ui.confirm ||
 					(await ctx.ui.confirm(`Remove "${pick.label}" from the pool?`))

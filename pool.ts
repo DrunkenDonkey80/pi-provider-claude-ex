@@ -60,6 +60,8 @@ export const KEEPALIVE_MS = 20 * 24 * 3_600_000;
 const DEFAULT_COOLDOWN_MS = 5 * 60_000;
 /** Background sweep cadence (daemon, or a session with no daemon running). */
 export const TICK_MS = 5 * 60_000;
+/** How often a sweep reconciles with the shared repo. */
+const SYNC_SWEEP_MS = 60 * 60_000;
 /** Only the in-use account polls in the background; the rest refresh on demand. */
 export const ACTIVE_USAGE_MS = 5 * 60_000;
 /** How often the background sweep re-reads everything and re-picks the best. */
@@ -555,6 +557,26 @@ export async function tick(opts: { usage?: boolean } = {}): Promise<void> {
 			await ensureFresh(account.label, { force: true });
 		}
 	}
+	// Publish live credentials on a cadence, not only when one rotates. A machine
+	// that logs in and then idles used to keep its good tokens to itself for the
+	// whole 8h access life, so the other machine's copies went invalid_grant
+	// before anything was ever pushed. Claimed in the store so N sessions do one
+	// fetch between them.
+	if (
+		syncOn(store.sync) &&
+		(await mutateStore((s) => {
+			if (now - (s.lastSyncAt ?? 0) < SYNC_SWEEP_MS) return false;
+			s.lastSyncAt = now;
+			return true;
+		}))
+	) {
+		try {
+			const { adopted, pushed } = await syncNow();
+			if (adopted || pushed) log(`sync sweep: ${adopted} in, ${pushed} out`);
+		} catch (e) {
+			log(`sync sweep failed: ${(e as Error).message}`);
+		}
+	}
 	if (opts.usage === false) return;
 	// Off by default. One warm-up at most, spaced so the windows it starts stay
 	// evenly phased rather than all expiring together.
@@ -589,12 +611,22 @@ export async function runDaemon(
 ): Promise<void> {
 	const tickMs = opts.tickMs ?? TICK_MS;
 	const beat = setInterval(() => {
-		writeJsonAtomic(DAEMON_PATH, { pid: process.pid, at: Date.now() });
+		// A heartbeat write that throws from a timer takes the whole process down.
+		try {
+			writeJsonAtomic(DAEMON_PATH, { pid: process.pid, at: Date.now() });
+		} catch {
+			/* next beat retries */
+		}
 	}, DAEMON_HEARTBEAT_MS);
 	writeJsonAtomic(DAEMON_PATH, { pid: process.pid, at: Date.now() });
 	try {
 		for (;;) {
-			await tick();
+			try {
+				await tick();
+			} catch (e) {
+				log(`sweep failed: ${(e as Error).message}`);
+				if (opts.once) throw e;
+			}
 			if (opts.once) return;
 			await new Promise((r) => setTimeout(r, tickMs));
 		}

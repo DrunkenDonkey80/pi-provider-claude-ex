@@ -87,6 +87,8 @@ export interface Store {
 	manualPin?: boolean;
 	/** Epoch ms of the last automatic re-pick, so the sweep keeps its cadence. */
 	autoSwitchAt?: number;
+	/** Epoch ms of the last background sync sweep, claimed across sessions. */
+	lastSyncAt?: number;
 	/**
 	 * How many 5h windows to keep already running. Absent/0 = off; `all` warms
 	 * every eligible account. Costs a token of weekly quota per warm-up.
@@ -211,7 +213,9 @@ export function writeJsonAtomic(path: string, value: unknown): void {
 	mkdirSync(dirname(path), { recursive: true });
 	const tmp = `${path}.${process.pid}.tmp`;
 	writeFileSync(tmp, JSON.stringify(value, null, 2), { mode: 0o600 });
-	const deadline = Date.now() + 1_000;
+	// Windows: an AV scanner or indexer holding the destination makes the
+	// rename EPERM for as long as it keeps the handle — seconds, not millis.
+	const deadline = Date.now() + 5_000;
 	for (;;) {
 		try {
 			renameSync(tmp, path); // atomic: readers never see a half-written store
