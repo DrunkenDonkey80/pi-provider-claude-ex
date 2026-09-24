@@ -22,6 +22,7 @@ import { attachCurrentLogin, setupCommands } from "./commands.ts";
 import {
 	AUTH_RE,
 	LIMIT_RE,
+	MODEL_CREDITS_RE,
 	TICK_MS,
 	activeAccount,
 	cooldownFromMessage,
@@ -153,6 +154,15 @@ function setupPool(pi: ExtensionAPI): void {
 				typeof msg.errorMessage !== "string"
 			)
 				return undefined;
+
+			// Wrong model for this subscription: no park, no switch, no retry. Pi
+			// retries anything saying 429/rate_limit, so reword the error — "billing"
+			// is on pi's non-retryable list — and the user fails fast.
+			if (MODEL_CREDITS_RE.test(msg.errorMessage)) {
+				const text = `Model "${model.id}" needs usage credits this Claude subscription doesn't include (billing) — switch model and resend.`;
+				ctx.ui.notify(text, "warning");
+				return { message: { ...event.message, errorMessage: text } };
+			}
 
 			const previous = activeAccount()?.label;
 			if (!previous) return undefined;

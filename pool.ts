@@ -517,6 +517,12 @@ export function parseResetEpoch(message: string): number | undefined {
 
 export const LIMIT_RE =
 	/\b429\b|\b529\b|rate[ _-]?limit|usage[ _-]?limit|overloaded_error|quota/i;
+/**
+ * A 429 that is about the MODEL, not the account: the subscription doesn't
+ * include it. Every account answers the same, so parking and switching just
+ * cascades through the whole pool.
+ */
+export const MODEL_CREDITS_RE = /usage credits are required/i;
 export const AUTH_RE =
 	/authentication_error|invalid authentication credentials|\b401\b/i;
 
