@@ -268,11 +268,11 @@ export function setupCommands(pi: ExtensionAPI): void {
 				return;
 			}
 			// Dynamic: cpool and tests load this module without pi's node_modules.
-			const { Container, SelectList, Text } = await import(
+			const { Container, SelectList, Text, matchesKey } = await import(
 				"@earendil-works/pi-tui"
 			);
 			type MenuAction = {
-				act: "switch" | "refresh" | "toggle" | "remove";
+				act: "switch" | "refresh" | "toggle" | "remove" | "up" | "down";
 				label: string;
 			};
 			// The list stays up: refresh / enable-disable / remove re-present it with
@@ -311,7 +311,7 @@ export function setupCommands(pi: ExtensionAPI): void {
 							new Text(
 								theme.fg(
 									"dim",
-									"enter switch • r refresh usage • d enable/disable • - remove • esc close",
+									"enter switch • r refresh usage • +/- priority • d enable/disable • del remove • esc close",
 								),
 								1,
 								0,
@@ -325,7 +325,9 @@ export function setupCommands(pi: ExtensionAPI): void {
 							render: (w: number) => box.render(w),
 							invalidate: () => box.invalidate(),
 							handleInput: (data: string) => {
-								if (data === "-") return onKey("remove");
+								if (matchesKey(data, "delete")) return onKey("remove");
+								if (data === "+" || data === "=") return onKey("up");
+								if (data === "-") return onKey("down");
 								if (data === "r") return onKey("refresh");
 								if (data === "d") return onKey("toggle");
 								list.handleInput(data);
@@ -356,6 +358,8 @@ export function setupCommands(pi: ExtensionAPI): void {
 					}
 					await refreshVisibleUsage();
 				} else if (pick.act === "toggle") await toggleDisabled(pick.label);
+				else if (pick.act === "up") await shiftPriority(pick.label, 1);
+				else if (pick.act === "down") await shiftPriority(pick.label, -1);
 				else if (
 					!ctx.ui.confirm ||
 					(await ctx.ui.confirm(`Remove "${pick.label}" from the pool?`))
@@ -684,6 +688,18 @@ async function removeFromPool(label: string): Promise<void> {
 	await mutateStore((store) => {
 		store.accounts = store.accounts.filter((a) => a.label !== label);
 		if (store.active === label) store.active = pickActive(store);
+	});
+	invalidateSnapshot();
+}
+
+/** Nudge an account's priority one step, clamped to -- .. ++. */
+export async function shiftPriority(label: string, step: number): Promise<void> {
+	await mutateStore((store) => {
+		const account = store.accounts.find((a) => a.label === label);
+		if (!account) return;
+		const next = Math.max(-2, Math.min(2, (account.priority ?? 0) + step));
+		if (next) account.priority = next;
+		else delete account.priority;
 	});
 	invalidateSnapshot();
 }

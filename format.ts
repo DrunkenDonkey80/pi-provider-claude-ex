@@ -128,7 +128,7 @@ export function accountLine(
 	// Fixed-width fields first so the quota columns line up down the list; the
 	// variable-length label/email goes last, where ragged ends cost nothing.
 	const parts = [
-		`${isActive ? "▸" : " "} ${index + 1}.`,
+		`${isActive ? "▸" : " "} ${index + 1}. ${priorityMark(account.priority).padEnd(2)}`,
 		window("5h", entry?.five_hour, HOUR, 2 * HOUR),
 		window("7d", entry?.seven_day, DAY, 2 * DAY),
 	];
@@ -163,6 +163,19 @@ const WINDOW_5H = 5 * HOUR;
 const WEEKLY_QUOTA_WEIGHT = 4.4 * DAY;
 /** What an about-to-reset 5h window is worth, same units. */
 const FIVE_H_NUDGE = 2 * DAY;
+/**
+ * What a + is worth: the account ranks as if its week reset 2 days sooner.
+ * Big enough that + drains before a fresh-ish normal account, small enough
+ * that a normal one about to lose real quota still goes first — e.g. 25% left
+ * with under ~1.7d, or 50% left with under ~2.8d, beats an untouched + week.
+ */
+const PRIORITY_WEIGHT = 2 * DAY;
+
+export const priorityMark = (p = 0): string =>
+	p > 0 ? "+".repeat(p) : "-".repeat(-p);
+
+/** ++ is its own tier ahead of everything ready, -- its own tier behind it. */
+export const priorityTier = (p: number): number => (p >= 2 ? 0 : p <= -2 ? 2 : 1);
 
 /**
  * Where a usable account belongs in the list — lower goes first.
@@ -199,7 +212,13 @@ const FIVE_H_NUDGE = 2 * DAY;
  * drain, so no nudge.
  */
 const readyRank = (
-	r: { reset7: number; reset5: number; pct5: number; pct7: number },
+	r: {
+		reset7: number;
+		reset5: number;
+		pct5: number;
+		pct7: number;
+		prio: number;
+	},
 	now: number,
 ): number => {
 	const left5 = Math.min(Math.max(r.reset5 - now, 0), WINDOW_5H);
@@ -209,7 +228,8 @@ const readyRank = (
 	return (
 		left7 -
 		WEEKLY_QUOTA_WEIGHT * free7 -
-		FIVE_H_NUDGE * gate * (1 - left5 / WINDOW_5H)
+		FIVE_H_NUDGE * gate * (1 - left5 / WINDOW_5H) -
+		PRIORITY_WEIGHT * Math.max(-1, Math.min(1, r.prio))
 	);
 };
 
@@ -251,6 +271,7 @@ export function sortAccountsForDisplay(
 			account,
 			index,
 			group,
+			prio: account.priority ?? 0,
 			pct5: pct5 ?? Number.POSITIVE_INFINITY,
 			pct7: pct7 ?? Number.POSITIVE_INFINITY,
 			reset5: resetAt(usage?.five_hour?.resets_at),
@@ -261,6 +282,8 @@ export function sortAccountsForDisplay(
 		.sort((a, b) => {
 			if (a.group !== b.group) return a.group - b.group;
 			if (a.group === 0) {
+				const tier = priorityTier(a.prio) - priorityTier(b.prio);
+				if (tier) return tier;
 				// Compared, not subtracted: two unknown resets are both +Infinity and
 				// Infinity - Infinity is NaN, which corrupts the whole sort.
 				const ra = readyRank(a, now);

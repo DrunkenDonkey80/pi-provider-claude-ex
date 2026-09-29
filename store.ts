@@ -48,6 +48,11 @@ export interface Account {
 	disabled?: boolean;
 	/** Refresh lineage revoked (`invalid_grant`) — needs /login + re-add. */
 	dead?: boolean;
+	/**
+	 * User priority, -2..2. ++ always first when usable, -- only when nothing
+	 * else is; ± shift the rank (see PRIORITY_WEIGHT in format.ts).
+	 */
+	priority?: number;
 	/** Rate/usage capped until this epoch ms. */
 	cooldownUntil?: number;
 	/** Anthropic identity, from /api/oauth/profile. Lets a fresh `/login

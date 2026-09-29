@@ -658,6 +658,40 @@ await check("a much idler account outranks a nearer deadline", () => {
 	);
 });
 
+// ++ is its own tier ahead, -- its own tier behind; +/- shift the rank by two
+// days, so an untouched + week beats a normal one but not one about to lose
+// real quota.
+await check("priority: ++ first, -- last, +/- bend the rank", () => {
+	const now = Date.parse("2026-01-01T00:00:00Z");
+	const DAY = 24 * 3_600_000;
+	const at = (ms: number) => new Date(now + ms).toISOString();
+	// label, priority, 7d left (days), 7d pct
+	const rows: [string, number, number, number][] = [
+		["mm", -2, 1, 0],
+		["m", -1, 4, 0],
+		["n", 0, 5, 0],
+		["p", 1, 6, 0],
+		["exp", 0, 1, 25],
+		["pp", 2, 6, 50],
+	];
+	const accounts = rows.map(([label, priority]) =>
+		acct(label, { priority }),
+	) as never;
+	const cache = Object.fromEntries(
+		rows.map(([label, , left7, pct7]) => [
+			label,
+			{
+				five_hour: { pct: 0 },
+				seven_day: { pct: pct7, resets_at: at(left7 * DAY) },
+			},
+		]),
+	) as never;
+	assert.deepEqual(
+		format.sortAccountsForDisplay(accounts, cache, now).map((a) => a.label),
+		["pp", "exp", "p", "n", "m", "mm"],
+	);
+});
+
 // A host that relaunches every saved session at once starts N sweeps in the
 // same instant. They all read the same cache snapshot and all see the label as
 // due, so without claiming the slot under the lock every one of them spends a
@@ -737,7 +771,7 @@ await check("accountLine shows state and quota", () => {
 		true,
 	);
 	// quota columns first, ragged label last
-	assert.match(line, /^▸ 1\. · 5h/);
+	assert.match(line, /^▸ 1\. {4}· 5h/); // blank 2-char priority slot
 	assert.match(line, /· x$/);
 	// fields are padded to a fixed width, so the gaps vary
 	assert.match(line, /5h\s+\[███░░░░░\]\s+34%/);

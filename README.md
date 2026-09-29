@@ -108,8 +108,17 @@ account between our reads — so the pool:
   fail to refresh (dead) entirely.
 
 In the `/claude-pool` list, keys act on the hovered row: `enter` switch,
-`r` refresh usage, `d` enable/disable, `-` remove, `esc` close. Refresh, toggle
-and remove re-present the updated list instead of closing it.
+`r` refresh usage, `+`/`-` priority, `d` enable/disable, `del` remove, `esc`
+close. Everything but a switch re-presents the updated list instead of closing it.
+
+**Priority** (shown after the row number) bends the ranking below:
+
+| mark | effect |
+| --- | --- |
+| `++` | its own tier: first whenever it is usable |
+| `+` | ranks as if its week reset 2 days sooner — drained first unless a normal account is about to lose real quota (25% left under ~1.7d, 50% under ~2.8d) |
+| `-` | ranks 2 days later — used when nothing else suits or it is close to expiring |
+| `--` | its own tier: emergency only, when nothing else is usable |
 
 The list is sorted for human scanning, and automatic selection takes its pick
 from the same order. Usable accounts rank by:

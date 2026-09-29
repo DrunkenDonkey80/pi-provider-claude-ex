@@ -31,7 +31,7 @@ import {
 	writeJsonAtomic,
 } from "./store.ts";
 import { type RefreshError, refreshGrant } from "./oauth.ts";
-import { sortAccountsForDisplay } from "./format.ts";
+import { priorityTier, sortAccountsForDisplay } from "./format.ts";
 import {
 	SERVE_TTL_MS,
 	collectUsage,
@@ -117,7 +117,11 @@ export function pickActive(store: Store): string | undefined {
 	if (pinned && usable(pinned, now)) return pinned.label;
 
 	const cache = readUsage();
-	const candidates = store.accounts.filter((a) => usable(a, now));
+	const ready = store.accounts.filter((a) => usable(a, now));
+	// Priority tiers first: ++ whenever usable, -- only when nothing else is.
+	const tier = (a: Account) => priorityTier(a.priority ?? 0);
+	const top = Math.min(...ready.map(tier));
+	const candidates = ready.filter((a) => tier(a) === top);
 	if (candidates.length) {
 		let best = candidates[0];
 		let bestScore = switchScore(cache[best.label], now);
