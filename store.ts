@@ -55,6 +55,8 @@ export interface Account {
 	priority?: number;
 	/** Toggled with enter in /claude-pool: above ++, always used while usable. */
 	favorite?: boolean;
+	/** Toggled with w: office-hours reserve, drained in free time (format.ts weekendState). */
+	weekend?: boolean;
 	/** Rate/usage capped until this epoch ms. */
 	cooldownUntil?: number;
 	/** Anthropic identity, from /api/oauth/profile. Lets a fresh `/login

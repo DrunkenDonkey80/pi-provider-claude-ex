@@ -27,7 +27,7 @@
  *     "not started".
  */
 
-import { sortAccountsForDisplay } from "./format.ts";
+import { sortAccountsForDisplay, weekendState } from "./format.ts";
 import { UsageHttpError, warmSession } from "./oauth.ts";
 import { type Account, type Store, mutateStore, readStore } from "./store.ts";
 import { type UsageCache, collectUsage, readUsage } from "./usage.ts";
@@ -59,7 +59,9 @@ const eligible = (store: Store, cache: UsageCache, now: number): Account[] =>
 			!a.dead &&
 			!a.disabled &&
 			(a.cooldownUntil ?? 0) <= now &&
-			(cache[a.label]?.seven_day?.pct ?? 0) < WEEK_FULL_PCT,
+			(cache[a.label]?.seven_day?.pct ?? 0) < WEEK_FULL_PCT &&
+			// A warm-up would quietly spend a weekend account's reserved week.
+			(!a.weekend || !!a.favorite || weekendState(cache[a.label], now).state === "drain"),
 	);
 
 /**

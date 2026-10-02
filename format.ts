@@ -36,6 +36,7 @@ function clockRelative(ms: number): string {
 const yellow = (s: string) => `\x1b[33m${s}\x1b[0m`;
 const red = (s: string) => `\x1b[31m${s}\x1b[0m`;
 const green = (s: string) => `\x1b[32m${s}\x1b[0m`;
+const blue = (s: string) => `\x1b[34m${s}\x1b[0m`;
 
 /** Yellow past half the window, red past three quarters. */
 function quotaColor(pct: number, s: string): string {
@@ -118,6 +119,7 @@ export function accountLine(
 	isActive: boolean,
 ): string {
 	const state = accountState(account);
+	const paint = account.favorite ? green : account.weekend ? blue : String;
 	// Plan/email are shown because one email can hold several subscriptions:
 	// without them two rows for the same person are indistinguishable.
 	const id = [
@@ -129,7 +131,7 @@ export function accountLine(
 	// Fixed-width fields first so the quota columns line up down the list; the
 	// variable-length label/email goes last, where ragged ends cost nothing.
 	const parts = [
-		(account.favorite ? green : String)(
+		paint(
 			`${isActive ? "▸" : " "} ${index + 1}. ${priorityMark(account.priority).padEnd(2)}`,
 		),
 		window("5h", entry?.five_hour, HOUR, 2 * HOUR),
@@ -137,6 +139,14 @@ export function accountLine(
 		loginTag(account, entry),
 		resetsCell(entry),
 	];
+	if (account.weekend) {
+		const w = weekendState(entry);
+		parts.push(
+			blue(
+				w.state === "drain" ? `wknd drain to ${Math.ceil(w.floor ?? 0)}%` : `wknd ${w.state}`,
+			),
+		);
+	}
 	for (const s of entry?.scoped ?? [])
 		parts.push(`${s.name} ${Math.round(s.pct)}%`);
 	if (entry?.spend)
@@ -145,7 +155,7 @@ export function accountLine(
 		);
 	if (state !== "ok" && !account.dead) parts.push(state); // DEAD says it already
 	parts.push(
-		(account.favorite ? green : String)(`${account.label}${id ? ` ${id}` : ""}`),
+		paint(`${account.label}${id ? ` ${id}` : ""}`),
 	);
 	if (entry?.error) parts.push(`usage: ${entry.error}`);
 	else if (entry?.at && Date.now() - entry.at > SERVE_TTL_MS)
@@ -202,9 +212,75 @@ export const priorityMark = (p = 0): string =>
 /** ++ is its own tier ahead of everything ready, -- its own tier behind it. */
 const priorityTier = (p: number): number => (p >= 2 ? 0 : p <= -2 ? 2 : 1);
 
-/** Favorites sit in a tier of their own, ahead of ++. */
-export const accountTier = (a: Account): number =>
-	a.favorite ? -1 : priorityTier(a.priority ?? 0);
+/** Office hours, local time: Mon-Fri 09:00-18:00. */
+const OFFICE_START = 9;
+const OFFICE_END = 18;
+/** Heavy use empties a week in this many office days; sizes the weekend floor. */
+const DRAIN_DAYS = 2;
+
+/** Office milliseconds in [from, to), one local day at a time (DST-safe). */
+export function officeMs(from: number, to: number): number {
+	let ms = 0;
+	const d = new Date(from);
+	d.setHours(0, 0, 0, 0);
+	for (; d.getTime() < to; d.setDate(d.getDate() + 1)) {
+		if (d.getDay() === 0 || d.getDay() === 6) continue;
+		const start = new Date(d).setHours(OFFICE_START);
+		const end = new Date(d).setHours(OFFICE_END);
+		ms += Math.max(0, Math.min(end, to) - Math.max(start, from));
+	}
+	return ms;
+}
+
+function nextOfficeStart(now: number): number {
+	const d = new Date(now);
+	d.setHours(OFFICE_START, 0, 0, 0);
+	while (d.getDay() === 0 || d.getDay() === 6 || d.getTime() <= now)
+		d.setDate(d.getDate() + 1);
+	return d.getTime();
+}
+
+/**
+ * A weekend account is a reserve for office hours, drained in free time down
+ * to a floor that covers the office hours left before its 7d reset at peak
+ * burn (a full week in DRAIN_DAYS office days). A fresh week therefore locks
+ * itself, and a reset before the next office start floors at 0: drain it all.
+ * Free-time use must not leave a 5h window open into the next office start.
+ */
+export function weekendState(
+	entry: UsageEntry | undefined,
+	now = Date.now(),
+): { state: "drain" | "locked" | "reserve"; floor?: number } {
+	if (officeMs(now, now + 1)) return { state: "reserve" };
+	const pct7 = entry?.seven_day?.pct;
+	if (typeof pct7 !== "number") return { state: "locked" };
+	// Unknown or already-passed reset = a fresh week the cache hasn't seen: hold.
+	const reset7 = resetAt(entry?.seven_day?.resets_at);
+	const weekEnd = reset7 > now && Number.isFinite(reset7) ? reset7 : now + 7 * DAY;
+	const floor = Math.min(
+		100,
+		(officeMs(now, weekEnd) * 100) / (DRAIN_DAYS * (OFFICE_END - OFFICE_START) * HOUR),
+	);
+	const office = nextOfficeStart(now);
+	const reset5 = resetAt(entry?.five_hour?.resets_at);
+	const fits5 =
+		Number.isFinite(reset5) && reset5 > now ? reset5 <= office : now + WINDOW_5H <= office;
+	return { state: 100 - pct7 > floor && fits5 ? "drain" : "locked", floor };
+}
+
+/** A weekend account outside its drain: behind even --, last resort only. */
+export const WEEKEND_HELD = 3;
+
+/** Favorites first, then a draining weekend account, then ++ .. --. */
+export const accountTier = (
+	a: Account,
+	entry: UsageEntry | undefined,
+	now = Date.now(),
+): number => {
+	if (a.favorite) return -2;
+	if (a.weekend) return weekendState(entry, now).state === "drain" ? -1 : WEEKEND_HELD;
+	return priorityTier(a.priority ?? 0);
+};
 
 /**
  * Where a usable account belongs in the list — lower goes first.
@@ -301,7 +377,7 @@ export function sortAccountsForDisplay(
 			index,
 			group,
 			prio: account.priority ?? 0,
-			tier: accountTier(account),
+			tier: accountTier(account, usage, now),
 			pct5: pct5 ?? Number.POSITIVE_INFINITY,
 			pct7: pct7 ?? Number.POSITIVE_INFINITY,
 			reset5: resetAt(usage?.five_hour?.resets_at),

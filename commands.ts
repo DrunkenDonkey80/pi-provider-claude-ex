@@ -275,6 +275,7 @@ export function setupCommands(pi: ExtensionAPI): void {
 				act:
 					| "switch"
 					| "favorite"
+					| "weekend"
 					| "refresh"
 					| "toggle"
 					| "remove"
@@ -318,7 +319,7 @@ export function setupCommands(pi: ExtensionAPI): void {
 							new Text(
 								theme.fg(
 									"dim",
-									"enter favorite • s switch • r refresh usage • +/- priority • d enable/disable • del remove • esc close",
+									"enter favorite • w weekend • s switch • r refresh usage • +/- priority • d enable/disable • del remove • esc close",
 								),
 								1,
 								0,
@@ -337,6 +338,7 @@ export function setupCommands(pi: ExtensionAPI): void {
 								if (data === "-") return onKey("down");
 								if (data === "r") return onKey("refresh");
 								if (data === "s") return onKey("switch");
+								if (data === "w") return onKey("weekend");
 								if (data === "d") return onKey("toggle");
 								list.handleInput(data);
 								tui.requestRender();
@@ -365,7 +367,8 @@ export function setupCommands(pi: ExtensionAPI): void {
 							ctx.ui.notify(`sync rescued ${adopted} dead account(s)`, "info");
 					}
 					await refreshVisibleUsage();
-				} else if (pick.act === "favorite") await toggleFavorite(pick.label);
+				} else if (pick.act === "favorite" || pick.act === "weekend")
+					await toggleFlag(pick.label, pick.act);
 				else if (pick.act === "toggle") await toggleDisabled(pick.label);
 				else if (pick.act === "up") await shiftPriority(pick.label, 1);
 				else if (pick.act === "down") await shiftPriority(pick.label, -1);
@@ -713,12 +716,12 @@ export async function shiftPriority(label: string, step: number): Promise<void> 
 	invalidateSnapshot();
 }
 
-async function toggleFavorite(label: string): Promise<void> {
+async function toggleFlag(label: string, flag: "favorite" | "weekend"): Promise<void> {
 	await mutateStore((store) => {
 		const account = store.accounts.find((a) => a.label === label);
 		if (!account) return;
-		if (account.favorite) delete account.favorite;
-		else account.favorite = true;
+		if (account[flag]) delete account[flag];
+		else account[flag] = true;
 	});
 	invalidateSnapshot();
 }

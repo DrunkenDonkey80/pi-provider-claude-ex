@@ -108,7 +108,7 @@ account between our reads — so the pool:
   fail to refresh (dead) entirely.
 
 In the `/claude-pool` list, keys act on the hovered row: `enter` toggle
-favorite (green; several allowed), `s` switch, `r` refresh usage, `+`/`-` priority, `d` enable/disable, `del` remove, `esc`
+favorite (green; several allowed), `w` toggle weekend (blue), `s` switch, `r` refresh usage, `+`/`-` priority, `d` enable/disable, `del` remove, `esc`
 close. Everything but a switch re-presents the updated list instead of closing it.
 
 **Priority** (shown after the row number) bends the ranking below:
@@ -116,6 +116,7 @@ close. Everything but a switch re-presents the updated list instead of closing i
 | mark | effect |
 | --- | --- |
 | favorite | green row, toggled with `enter`: tier above `++`, and takes over from any non-favorite pin — always used while usable |
+| weekend | blue row, toggled with `w`: an office-hours reserve, see below |
 | `++` | its own tier: first whenever it is usable |
 | `+` | ranks as if its week reset 2 days sooner — drained first unless a normal account is about to lose real quota (25% left under ~1.7d, 50% under ~2.8d) |
 | `-` | ranks 2 days later — used when nothing else suits or it is close to expiring |
@@ -164,6 +165,17 @@ is the only question left.
 Then come 5h-full accounts with under 90% weekly usage by soonest 5h reset; then
 other healthy, cooling, and dead/disabled accounts. Row numbers are rankings
 only, never command targets — commands accept labels or unique substrings.
+
+A **weekend** account (`w`) is kept for office hours (Mon-Fri 09:00-18:00,
+local time) and drained in free time. Outside office hours it may spend down to
+a floor that covers the office hours left before its 7d reset at peak burn (a
+full week in 2 office days, ~5.6% per office hour). While above the floor it
+ranks right after favorites and takes over from any other pin; otherwise it is
+last resort only, behind `--`, and warm-up skips it. A reset before the next
+office start floors at 0 (drain every bit); a fresh week locks itself. Free-time
+use must not leave a 5h window open past the next 09:00. The row shows
+`wknd drain to N%`, `wknd locked` or `wknd reserve`. A manual switch (`s`) or
+making it a favorite (`enter`) overrides all of this.
 
 A **disabled** account is held out of rotation but still kept logged in: the
 keep-alive sweep refreshes its token like any other, so it is ready the moment

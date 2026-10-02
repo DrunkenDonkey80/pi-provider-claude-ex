@@ -169,6 +169,56 @@ await check("pickActive stays pinned while the pin is usable", async () => {
 });
 
 // A usable favorite beats any non-favorite pin; once it cools, fallback resumes.
+// Weekend account: office-hours reserve, drained in free time down to a floor
+// sized for the office hours left before its 7d reset at peak burn (2 days).
+// Dates are local: 2026-10-06 is a Tuesday.
+await check("weekend account drains only outside office hours, above its floor", () => {
+	const at = (day: number, h: number) => new Date(2026, 9, day, h).getTime();
+	const entry = (pct7: number, reset7: number, reset5?: number) =>
+		({
+			seven_day: { pct: pct7, resets_at: new Date(reset7).toISOString() },
+			five_hour: { pct: 0, resets_at: reset5 && new Date(reset5).toISOString() },
+		}) as never;
+	const w = (e: never, now: number) => format.weekendState(e, now);
+	assert.equal(format.officeMs(at(6, 18), at(7, 12)) / 3_600_000, 3);
+	assert.equal(w(entry(10, at(8, 12)), at(6, 12)).state, "reserve", "Tue noon");
+	// Tue 18:00, 50% left, reset Wed 12:00 -> floor 3h/18h = 17%: drain
+	const tue = w(entry(50, at(7, 12)), at(6, 18));
+	assert.equal(tue.state, "drain");
+	assert.equal(Math.round(tue.floor ?? -1), 17);
+	// same but reset Wed 22:00 -> 9h = 50% floor, 50% left: locked
+	assert.equal(w(entry(50, at(7, 22)), at(6, 18)).state, "locked");
+	// Wed 18:00, reset 22:00 -> floor 0, drain every bit
+	assert.equal(w(entry(95, at(7, 22)), at(7, 18)).floor, 0);
+	assert.equal(w(entry(95, at(7, 22)), at(7, 18)).state, "drain");
+	// just reset: a fresh week holds itself
+	assert.equal(w(entry(0, at(14, 22)), at(7, 22)).state, "locked");
+	// stale cache past its reset must not drain the fresh week
+	assert.equal(w(entry(30, at(7, 20)), at(7, 21)).state, "locked");
+	// Fri 18:00 -> Sun 15:00 reset: drain all weekend
+	assert.equal(w(entry(40, at(11, 15)), at(9, 18)).state, "drain");
+	// 5h guard: Mon 05:00, no window open -> it would run past 09:00
+	assert.equal(w(entry(40, at(13, 10)), at(12, 5)).state, "locked");
+	// ...but an open window that resets by 09:00 may keep going
+	assert.equal(w(entry(40, at(13, 10), at(12, 8)), at(12, 5)).state, "drain");
+});
+
+await check("a held weekend account gives up an automatic pin", async () => {
+	const pool = await import("./pool.ts");
+	// No usage data = locked (or office hours = reserve): either way held.
+	seed([acct("wk", { weekend: true }), acct("a")]);
+	await store.mutateStore((s) => {
+		s.active = "wk";
+		s.manualPin = false;
+	});
+	assert.equal(pool.pickActive(store.readStore()), "a");
+	await store.mutateStore((s) => {
+		s.manualPin = true;
+	});
+	assert.equal(pool.pickActive(store.readStore()), "wk", "a manual switch is the exception");
+	pool.invalidateSnapshot();
+});
+
 await check("a favorite overrides a non-favorite pin", async () => {
 	const pool = await import("./pool.ts");
 	seed([acct("a"), acct("fav", { favorite: true })]);

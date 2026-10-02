@@ -31,7 +31,7 @@ import {
 	writeJsonAtomic,
 } from "./store.ts";
 import { type RefreshError, refreshGrant } from "./oauth.ts";
-import { accountTier, sortAccountsForDisplay } from "./format.ts";
+import { WEEKEND_HELD, accountTier, sortAccountsForDisplay } from "./format.ts";
 import {
 	SERVE_TTL_MS,
 	collectUsage,
@@ -103,11 +103,22 @@ export function poolEnabled(): boolean {
 export const usable = (a: Account, now = Date.now()): boolean =>
 	!a.dead && !a.disabled && (a.cooldownUntil ?? 0) <= now;
 
-/** The pin keeps serving unless it is not a favorite and a usable favorite exists. */
-const holds = (store: Store, pinned: Account | undefined, now = Date.now()) =>
-	!!pinned &&
-	usable(pinned, now) &&
-	(!!pinned.favorite || !store.accounts.some((a) => a.favorite && usable(a, now)));
+/**
+ * The pin keeps serving unless a usable favorite / draining weekend account
+ * outranks it, or it is a weekend account that locked under an automatic pin.
+ */
+function holds(store: Store, pinned: Account | undefined, now = Date.now()): boolean {
+	if (!pinned || !usable(pinned, now)) return false;
+	// Hot path (getApiKey): skip the cache read when nothing can override.
+	if (!store.accounts.some((a) => a.favorite || a.weekend)) return true;
+	const cache = readUsage();
+	const tier = (a: Account) => accountTier(a, cache[a.label], now);
+	const t = tier(pinned);
+	if (t === WEEKEND_HELD && !store.manualPin) return false;
+	return !store.accounts.some(
+		(a) => a !== pinned && usable(a, now) && tier(a) < Math.min(t, 0),
+	);
+}
 
 /**
  * Sticky selection: stay on the pinned account while it is usable, otherwise
@@ -124,8 +135,9 @@ export function pickActive(store: Store): string | undefined {
 
 	const cache = readUsage();
 	const ready = store.accounts.filter((a) => usable(a, now));
-	// Priority tiers first: favorites, then ++, -- only when nothing else is.
-	const tier = accountTier;
+	// Tiers first: favorites, draining weekend, ++, then -- and a held weekend
+	// only when nothing else is.
+	const tier = (a: Account) => accountTier(a, cache[a.label], now);
 	const top = Math.min(...ready.map(tier));
 	const candidates = ready.filter((a) => tier(a) === top);
 	if (candidates.length) {
