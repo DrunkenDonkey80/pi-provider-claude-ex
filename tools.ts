@@ -94,12 +94,18 @@ function transformTools(tools: unknown[]): {
 }
 
 function remapMessages(messages: unknown[], renamed: Map<string, string>): unknown[] {
-	if (renamed.size === 0) return messages;
 	let changed = false;
 	const next = messages.map((msg) => {
 		if (!isPlainObject(msg) || !Array.isArray(msg.content)) return msg;
 		let blockChanged = false;
 		const content = msg.content.map((block) => {
+			// Pi's mid-conversation tool_addition / tool_removal blocks reference tools
+			// by name. Alias by rule, not by map: a removed tool may be undeclared now.
+			const ref = isPlainObject(block) ? block.tool : undefined;
+			if (isPlainObject(ref) && ref.type === "tool_reference" && shouldRename({ name: ref.name })) {
+				blockChanged = true;
+				return { ...block, tool: { ...ref, name: ALIAS_PREFIX + ref.name } };
+			}
 			if (!isPlainObject(block) || block.type !== "tool_use" || typeof block.name !== "string")
 				return block;
 			const alias = renamed.get(lower(block.name));

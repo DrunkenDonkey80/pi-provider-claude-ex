@@ -31,7 +31,7 @@ import {
 	writeJsonAtomic,
 } from "./store.ts";
 import { type RefreshError, refreshGrant } from "./oauth.ts";
-import { priorityTier, sortAccountsForDisplay } from "./format.ts";
+import { accountTier, sortAccountsForDisplay } from "./format.ts";
 import {
 	SERVE_TTL_MS,
 	collectUsage,
@@ -103,6 +103,12 @@ export function poolEnabled(): boolean {
 export const usable = (a: Account, now = Date.now()): boolean =>
 	!a.dead && !a.disabled && (a.cooldownUntil ?? 0) <= now;
 
+/** The pin keeps serving unless it is not a favorite and a usable favorite exists. */
+const holds = (store: Store, pinned: Account | undefined, now = Date.now()) =>
+	!!pinned &&
+	usable(pinned, now) &&
+	(!!pinned.favorite || !store.accounts.some((a) => a.favorite && usable(a, now)));
+
 /**
  * Sticky selection: stay on the pinned account while it is usable, otherwise
  * the best switch score (quota left vs time left to spend it), otherwise the
@@ -114,12 +120,12 @@ export const usable = (a: Account, now = Date.now()): boolean =>
 export function pickActive(store: Store): string | undefined {
 	const now = Date.now();
 	const pinned = store.active ? findAccount(store, store.active) : undefined;
-	if (pinned && usable(pinned, now)) return pinned.label;
+	if (pinned && holds(store, pinned, now)) return pinned.label;
 
 	const cache = readUsage();
 	const ready = store.accounts.filter((a) => usable(a, now));
-	// Priority tiers first: ++ whenever usable, -- only when nothing else is.
-	const tier = (a: Account) => priorityTier(a.priority ?? 0);
+	// Priority tiers first: favorites, then ++, -- only when nothing else is.
+	const tier = accountTier;
 	const top = Math.min(...ready.map(tier));
 	const candidates = ready.filter((a) => tier(a) === top);
 	if (candidates.length) {
@@ -457,7 +463,7 @@ export const autoSwitchEnabled = (store: Store): boolean =>
 export function autoSwitchDue(store: Store, now = Date.now()): boolean {
 	if (!autoSwitchEnabled(store)) return false;
 	const pinned = store.active ? findAccount(store, store.active) : undefined;
-	if (store.manualPin && pinned && usable(pinned, now)) return false;
+	if (store.manualPin && holds(store, pinned, now)) return false;
 	return now - (store.autoSwitchAt ?? 0) >= AUTO_SWITCH_MS;
 }
 
@@ -468,7 +474,7 @@ export async function pickNext(
 	// No switch pending: the pinned account still works, so spend nothing.
 	// `force` is the periodic sweep, which re-reads precisely to find better.
 	const pinned = store.active ? findAccount(store, store.active) : undefined;
-	if (!opts.force && pinned && usable(pinned)) return pinned.label;
+	if (!opts.force && pinned && holds(store, pinned)) return pinned.label;
 
 	const labels = store.accounts.filter((a) => usable(a)).map((a) => a.label);
 	if (labels.length > 1) {

@@ -35,6 +35,7 @@ function clockRelative(ms: number): string {
 
 const yellow = (s: string) => `\x1b[33m${s}\x1b[0m`;
 const red = (s: string) => `\x1b[31m${s}\x1b[0m`;
+const green = (s: string) => `\x1b[32m${s}\x1b[0m`;
 
 /** Yellow past half the window, red past three quarters. */
 function quotaColor(pct: number, s: string): string {
@@ -128,9 +129,13 @@ export function accountLine(
 	// Fixed-width fields first so the quota columns line up down the list; the
 	// variable-length label/email goes last, where ragged ends cost nothing.
 	const parts = [
-		`${isActive ? "▸" : " "} ${index + 1}. ${priorityMark(account.priority).padEnd(2)}`,
+		(account.favorite ? green : String)(
+			`${isActive ? "▸" : " "} ${index + 1}. ${priorityMark(account.priority).padEnd(2)}`,
+		),
 		window("5h", entry?.five_hour, HOUR, 2 * HOUR),
 		window("7d", entry?.seven_day, DAY, 2 * DAY),
+		loginTag(account, entry),
+		resetsCell(entry),
 	];
 	for (const s of entry?.scoped ?? [])
 		parts.push(`${s.name} ${Math.round(s.pct)}%`);
@@ -138,19 +143,39 @@ export function accountLine(
 		parts.push(
 			`spend ${entry.spend.used.toFixed(2)}/${entry.spend.limit.toFixed(2)} ${entry.spend.currency}`,
 		);
-	if (state !== "ok") parts.push(state);
-	// "login exp <date>" read as "login expired" on a truncated row; this is the
-	// date the login stays GOOD until, so say that.
-	if (account.refreshExpires)
-		parts.push(
-			`login ok to ${new Date(account.refreshExpires).toISOString().slice(0, 10)}`,
-		);
-	parts.push(`${account.label}${id ? ` ${id}` : ""}`);
+	if (state !== "ok" && !account.dead) parts.push(state); // DEAD says it already
+	parts.push(
+		(account.favorite ? green : String)(`${account.label}${id ? ` ${id}` : ""}`),
+	);
 	if (entry?.error) parts.push(`usage: ${entry.error}`);
 	else if (entry?.at && Date.now() - entry.at > SERVE_TTL_MS)
 		parts.push(`as of ${relative(Date.now() - entry.at)} ago`);
 	else if (!entry?.at) parts.push("usage: not fetched yet");
 	return parts.join(" · ");
+}
+
+/** Login health, fixed width: [DEAD] revoked, [ERROR] expired or auth refused. */
+function loginTag(account: Account, entry: UsageEntry | undefined): string {
+	if (account.dead) return red("[DEAD] ");
+	const authFail = /^(http-401|http-403|no-access-token)$/.test(entry?.error ?? "");
+	if (authFail || (account.refreshExpires ?? Number.POSITIVE_INFINITY) <= Date.now())
+		return yellow("[ERROR]");
+	return "[OK]   ";
+}
+
+/** Saved limit resets: "?" = unknown/ineligible, red under 3 days to expiry. */
+function resetsCell(entry: UsageEntry | undefined): string {
+	const W = 18; // "resets 1 (12d  3h)"
+	const r = entry?.resets;
+	if (!r || r.why) return "resets ?".padEnd(W);
+	const now = Date.now();
+	const live = r.grants.filter((g) => !g.ends_at || Date.parse(g.ends_at) > now);
+	const count = live.reduce((n, g) => n + g.left, 0);
+	const ends = live.map((g) => (g.ends_at ? Date.parse(g.ends_at) : Number.POSITIVE_INFINITY));
+	const next = Math.min(...ends);
+	if (!count || !Number.isFinite(next)) return `resets ${count}`.padEnd(W);
+	const s = `resets ${count} (${clockRelative(next - now)})`.padEnd(W);
+	return next - now < 3 * DAY ? red(s) : s;
 }
 
 const resetAt = (iso: string | undefined): number => {
@@ -175,7 +200,11 @@ export const priorityMark = (p = 0): string =>
 	p > 0 ? "+".repeat(p) : "-".repeat(-p);
 
 /** ++ is its own tier ahead of everything ready, -- its own tier behind it. */
-export const priorityTier = (p: number): number => (p >= 2 ? 0 : p <= -2 ? 2 : 1);
+const priorityTier = (p: number): number => (p >= 2 ? 0 : p <= -2 ? 2 : 1);
+
+/** Favorites sit in a tier of their own, ahead of ++. */
+export const accountTier = (a: Account): number =>
+	a.favorite ? -1 : priorityTier(a.priority ?? 0);
 
 /**
  * Where a usable account belongs in the list — lower goes first.
@@ -272,6 +301,7 @@ export function sortAccountsForDisplay(
 			index,
 			group,
 			prio: account.priority ?? 0,
+			tier: accountTier(account),
 			pct5: pct5 ?? Number.POSITIVE_INFINITY,
 			pct7: pct7 ?? Number.POSITIVE_INFINITY,
 			reset5: resetAt(usage?.five_hour?.resets_at),
@@ -282,7 +312,7 @@ export function sortAccountsForDisplay(
 		.sort((a, b) => {
 			if (a.group !== b.group) return a.group - b.group;
 			if (a.group === 0) {
-				const tier = priorityTier(a.prio) - priorityTier(b.prio);
+				const tier = a.tier - b.tier;
 				if (tier) return tier;
 				// Compared, not subtracted: two unknown resets are both +Infinity and
 				// Infinity - Infinity is NaN, which corrupts the whole sort.

@@ -53,6 +53,8 @@ export interface Account {
 	 * else is; ± shift the rank (see PRIORITY_WEIGHT in format.ts).
 	 */
 	priority?: number;
+	/** Toggled with enter in /claude-pool: above ++, always used while usable. */
+	favorite?: boolean;
 	/** Rate/usage capped until this epoch ms. */
 	cooldownUntil?: number;
 	/** Anthropic identity, from /api/oauth/profile. Lets a fresh `/login

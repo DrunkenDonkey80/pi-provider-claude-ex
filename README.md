@@ -107,14 +107,15 @@ account between our reads — so the pool:
 * **falls back to cached numbers** if a read fails, and skips lineages that
   fail to refresh (dead) entirely.
 
-In the `/claude-pool` list, keys act on the hovered row: `enter` switch,
-`r` refresh usage, `+`/`-` priority, `d` enable/disable, `del` remove, `esc`
+In the `/claude-pool` list, keys act on the hovered row: `enter` toggle
+favorite (green; several allowed), `s` switch, `r` refresh usage, `+`/`-` priority, `d` enable/disable, `del` remove, `esc`
 close. Everything but a switch re-presents the updated list instead of closing it.
 
 **Priority** (shown after the row number) bends the ranking below:
 
 | mark | effect |
 | --- | --- |
+| favorite | green row, toggled with `enter`: tier above `++`, and takes over from any non-favorite pin — always used while usable |
 | `++` | its own tier: first whenever it is usable |
 | `+` | ranks as if its week reset 2 days sooner — drained first unless a normal account is about to lose real quota (25% left under ~1.7d, 50% under ~2.8d) |
 | `-` | ranks 2 days later — used when nothing else suits or it is close to expiring |
@@ -284,8 +285,13 @@ subscriptions. Delete it once imported.
 A row looks like:
 
 ```
-▸ 2. datecs:flex1 · 5h(2h 11m) [███░░░░░] 34% · 7d(3d 4h) [██████░░] 71% · Fable 12% · login exp 2026-11-04
+▸ 2.    · 5h( 2h 11m) [███░░░░░]  34% · 7d( 3d  4h) [██████░░]  71% · [OK]    · resets 1 (16d  2h) · Fable 12% · datecs:flex1
 ```
+
+Login is `[OK]`, `[ERROR]` (expired or auth refused) or `[DEAD]` (re-login).
+`resets N (clock)` counts the one-off limit resets Anthropic grants (redeem in
+Claude web/desktop: Settings → Usage → Resets; read-only here), red under 3
+days to expiry; `resets ?` means unknown or ineligible, not zero.
 
 ## CLI (`cpool`) — works outside pi
 

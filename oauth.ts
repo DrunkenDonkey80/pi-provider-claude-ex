@@ -359,7 +359,22 @@ export interface UsageSnapshot {
 	/** Per-model weekly windows, e.g. { name: "Fable", pct: 12 }. */
 	scoped?: { name: string; pct: number; resets_at?: string }[];
 	spend?: { used: number; limit: number; pct: number; currency: string };
+	/**
+	 * One-off limit resets (`cedar_ember`, redeemed in Claude web/desktop
+	 * Settings > Usage > Resets; this extension only reads them). Absent = the
+	 * block did not come back at all; `why` set = ineligible. Both render as "?",
+	 * never as "0", which means eligible with nothing left.
+	 */
+	resets?: { why?: string; grants: { left: number; ends_at?: string }[] };
 }
+
+/**
+ * The server gates `cedar_ember` on the Claude Code CLI identity: no UA gives
+ * `ineligible_reason: "surface"`, claude-cli 2.1.238 and 2.1.250 give
+ * "cli_version", 2.2.0 is eligible (probed 2026-10).
+ * ponytail: pinned version, bump it when Anthropic raises the floor again.
+ */
+const CLI_UA = "claude-cli/2.2.0 (external, cli)";
 
 export class UsageHttpError extends Error {
 	// Explicit fields, not constructor parameter properties: Node's strip-only
@@ -436,13 +451,18 @@ export async function fetchProfile(access: string): Promise<Profile> {
 }
 
 export async function fetchUsage(access: string): Promise<UsageSnapshot> {
-	const response = await fetch("https://api.anthropic.com/api/oauth/usage", {
-		headers: {
-			Authorization: `Bearer ${access}`,
-			"anthropic-beta": "oauth-2025-04-20",
-		},
-		signal: AbortSignal.timeout(10_000),
-	});
+	const get = (query: string) =>
+		fetch(`https://api.anthropic.com/api/oauth/usage${query}`, {
+			headers: {
+				Authorization: `Bearer ${access}`,
+				"anthropic-beta": "oauth-2025-04-20",
+				"User-Agent": CLI_UA,
+			},
+			signal: AbortSignal.timeout(10_000),
+		});
+	let response = await get("?cedar_ember=1");
+	// An unsupported flag must not cost the windows (CodexBar does the same).
+	if (response.status === 403) response = await get("");
 	if (!response.ok) {
 		const raw = response.headers.get("retry-after");
 		const retry = raw ? Number(raw) : undefined;
@@ -562,5 +582,31 @@ export function parseUsage(data: Record<string, unknown>): UsageSnapshot {
 			currency: eu.currency ?? "USD",
 		};
 	}
+	out.resets = parseResets(data.cedar_ember);
 	return out;
+}
+
+/**
+ * Inventory is the sum of `resets_left`, never the grant count. Paused or
+ * not-yet-started grants don't count; expiry is checked at render time.
+ * `usable_now` / `use_requires_limit` are redemption policy, not inventory.
+ */
+function parseResets(raw: unknown): UsageSnapshot["resets"] {
+	if (!raw || typeof raw !== "object") return undefined;
+	const ce = raw as { eligible?: unknown; ineligible_reason?: unknown; grants?: unknown };
+	if (ce.eligible !== true)
+		return {
+			why: typeof ce.ineligible_reason === "string" ? ce.ineligible_reason : "ineligible",
+			grants: [],
+		};
+	const grants: { left: number; ends_at?: string }[] = [];
+	for (const g of Array.isArray(ce.grants) ? ce.grants : []) {
+		if (!g || typeof g !== "object") continue;
+		const { resets_left, paused, starts_at, ends_at } = g as Record<string, unknown>;
+		if (typeof resets_left !== "number" || resets_left <= 0 || paused === true) continue;
+		if (typeof starts_at === "string" && Date.parse(starts_at) > Date.now()) continue;
+		const ends = typeof ends_at === "string" && Number.isFinite(Date.parse(ends_at));
+		grants.push({ left: resets_left, ends_at: ends ? (ends_at as string) : undefined });
+	}
+	return { grants };
 }

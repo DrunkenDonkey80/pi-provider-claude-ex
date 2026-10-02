@@ -168,6 +168,22 @@ await check("pickActive stays pinned while the pin is usable", async () => {
 	assert.equal((await import("./pool.ts")).pickActive(store.readStore()), "b");
 });
 
+// A usable favorite beats any non-favorite pin; once it cools, fallback resumes.
+await check("a favorite overrides a non-favorite pin", async () => {
+	const pool = await import("./pool.ts");
+	seed([acct("a"), acct("fav", { favorite: true })]);
+	await store.mutateStore((s) => {
+		s.active = "a";
+	});
+	assert.equal(pool.pickActive(store.readStore()), "fav");
+	seed([acct("a"), acct("fav", { favorite: true, cooldownUntil: Date.now() + 600_000 })]);
+	await store.mutateStore((s) => {
+		s.active = "a";
+	});
+	assert.equal(pool.pickActive(store.readStore()), "a");
+	pool.invalidateSnapshot();
+});
+
 // A dead pin turns off stickiness: pickActive re-scores the cache on every
 // call, so the account in use drifts every time the numbers move. pickNext
 // must write its choice down. One usable candidate = no refresh, no network.
@@ -755,6 +771,34 @@ await check("findByIdentity keys on (account, org), not email", async () => {
 	);
 });
 
+// Pi's tool_addition / tool_removal blocks must name the same alias as the
+// declaration, including a removed tool that is no longer declared at all.
+await check("tool_reference names are aliased like declarations", async () => {
+	const { transformPayload } = await import("./tools.ts");
+	const ref = (type: string, name: string) => ({ type, tool: { type: "tool_reference", name } });
+	const out = transformPayload(
+		{
+			tools: [{ name: "compress", input_schema: {} }],
+			messages: [
+				{
+					role: "system",
+					content: [
+						ref("tool_addition", "compress"),
+						ref("tool_removal", "gone"),
+						ref("tool_removal", "Read"),
+						ref("tool_addition", "mcp__x__y"),
+					],
+				},
+			],
+		},
+		false,
+	) as { messages: { content: { tool: { name: string } }[] }[] };
+	assert.deepEqual(
+		out.messages[0].content.map((b) => b.tool.name),
+		["mcp__pi__compress", "mcp__pi__gone", "Read", "mcp__x__y"],
+	);
+});
+
 await check("accountLine shows state and quota", () => {
 	const line = format.accountLine(
 		acct("x", {
@@ -779,7 +823,36 @@ await check("accountLine shows state and quota", () => {
 	assert.match(line, /7d\s+\u001b\[33m\[██████░░\]\s+71%/);
 	assert.match(line, /Fable 12%/);
 	assert.match(line, /cooling/);
-	assert.match(line, /login ok to 2026-11-04/);
+	assert.match(line, /\[OK\]/);
+	assert.match(line, /resets \?/, "no cedar_ember block = unknown, not 0");
+});
+
+// Inventory sums resets_left over live grants; ineligible is "?", never "0".
+await check("limit resets parse defensively and render by expiry", async () => {
+	const { parseUsage } = await import("./oauth.ts");
+	const plain = (s: string) => s.replace(/\u001b\[\d+m/g, "");
+	const iso = (ms: number) => new Date(Date.now() + ms).toISOString();
+	const line = (ce: unknown) =>
+		format.accountLine(acct("x"), 0, { at: Date.now(), ...parseUsage({ cedar_ember: ce }) }, false);
+	const g = (over: Record<string, unknown>) => ({ resets_left: 1, ends_at: iso(10 * 86_400_000), ...over });
+	assert.match(line({ eligible: false, ineligible_reason: "surface" }), /resets \?/);
+	assert.match(line({ eligible: true, grants: null }), /resets 0/);
+	const ok = line({
+		eligible: true,
+		grants: [
+			g({ resets_left: 2 }),
+			g({ paused: true }),
+			g({ resets_left: 0 }),
+			g({ starts_at: iso(86_400_000) }),
+			g({ ends_at: iso(-1000) }),
+			g({ resets_left: "1" }),
+			"junk",
+		],
+	});
+	assert.match(plain(ok), /resets 2 \(10d  0h\)/);
+	assert.ok(!ok.includes("\u001b[31mresets"), "10 days out is not red");
+	assert.ok(line({ eligible: true, grants: [g({ ends_at: iso(2 * 86_400_000) })] }).includes("\u001b[31mresets 1"));
+	assert.match(format.accountLine(acct("x", { dead: true }), 0, undefined, false), /\[DEAD\]/);
 });
 
 // Columns must line up down the list whatever the clock and percent widths
