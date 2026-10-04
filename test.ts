@@ -172,6 +172,59 @@ await check("pickActive stays pinned while the pin is usable", async () => {
 // Weekend account: office-hours reserve, drained in free time down to a floor
 // sized for the office hours left before its 7d reset at peak burn (2 days).
 // Dates are local: 2026-10-06 is a Tuesday.
+// The upcoming night (00:00-08:00 local) is time nobody spends quota in.
+await check("ranking subtracts the upcoming night from the week", async () => {
+	const { upcomingNightMs } = await import("./usage.ts");
+	const at = (day: number, h: number) => new Date(2026, 9, day, h).getTime();
+	const H = 3_600_000;
+	// 20:00 with 12h left (reset 08:00): really 4h
+	assert.equal(upcomingNightMs(at(6, 20), at(7, 8)) / H, 8);
+	// 02:00 now: the rest of this night counts
+	assert.equal(upcomingNightMs(at(7, 2), at(7, 10)) / H, 6);
+	// reset before the night starts: nothing to subtract
+	assert.equal(upcomingNightMs(at(6, 10), at(6, 22)), 0);
+	// only one night, even across several
+	assert.equal(upcomingNightMs(at(6, 10), at(9, 10)) / H, 8);
+	// 20:00: rosi (30% free, reset 08:00 = 12h, really 4h) vs evening (25% free,
+	// reset 23:00 = 3h). By raw clock evening goes first; minus the night, rosi.
+	const now = at(6, 20);
+	const iso = (ms: number) => new Date(ms).toISOString();
+	const e = (reset: number, pct7: number) => ({
+		five_hour: { pct: 50, resets_at: iso(now + 4 * H) },
+		seven_day: { pct: pct7, resets_at: iso(reset) },
+	});
+	assert.deepEqual(
+		format
+			.sortAccountsForDisplay(
+				[acct("evening"), acct("rosi")] as never,
+				{ evening: e(at(6, 23), 75), rosi: e(at(7, 8), 70) } as never,
+				now,
+			)
+			.map((a) => a.label),
+		["rosi", "evening"],
+	);
+	// Real pool, Sun 23:36: rgateva 86% used, 13h24m left (5h24m after the night)
+	// must beat home 60% used, 30h24m left: under 12h every hour counts double.
+	const sun = at(4, 23) + 36 * 60_000;
+	const row = (pct7: number, left7: number, left5: number) => ({
+		five_hour: { pct: 0, resets_at: iso(sun + left5) },
+		seven_day: { pct: pct7, resets_at: iso(sun + left7) },
+	});
+	assert.deepEqual(
+		format
+			.sortAccountsForDisplay(
+				[acct("home"), acct("rgateva")] as never,
+				{
+					home: row(60, 30.4 * H, 1.9 * H),
+					rgateva: row(86, 13.4 * H, 1.23 * H),
+				} as never,
+				sun,
+			)
+			.map((a) => a.label),
+		["rgateva", "home"],
+	);
+});
+
 await check("weekend account drains only outside office hours, above its floor", () => {
 	const at = (day: number, h: number) => new Date(2026, 9, day, h).getTime();
 	const entry = (pct7: number, reset7: number, reset5?: number) =>

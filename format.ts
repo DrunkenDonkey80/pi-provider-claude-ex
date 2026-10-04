@@ -1,7 +1,12 @@
 /** Shared rendering for the slash commands, the CLI and the status widget. */
 
 import type { Account } from "./store.ts";
-import { SERVE_TTL_MS, type UsageEntry, type UsageCache } from "./usage.ts";
+import {
+	SERVE_TTL_MS,
+	type UsageEntry,
+	type UsageCache,
+	upcomingNightMs,
+} from "./usage.ts";
 
 export function relative(ms: number): string {
 	const s = Math.max(0, Math.round(ms / 1000));
@@ -205,6 +210,8 @@ const FIVE_H_NUDGE = 2 * DAY;
  * with under ~1.7d, or 50% left with under ~2.8d, beats an untouched + week.
  */
 const PRIORITY_WEIGHT = 2 * DAY;
+/** Below this much real time left on the week, the deadline slope doubles. */
+const URGENT_MS = 12 * HOUR;
 
 export const priorityMark = (p = 0): string =>
 	p > 0 ? "+".repeat(p) : "-".repeat(-p);
@@ -327,11 +334,15 @@ const readyRank = (
 	now: number,
 ): number => {
 	const left5 = Math.min(Math.max(r.reset5 - now, 0), WINDOW_5H);
-	const left7 = Math.max(r.reset7 - now, 0);
+	const left7 = Math.max(r.reset7 - now, 0) - upcomingNightMs(now, r.reset7);
+	// Under 12h of real time left, each hour counts double: a gentle pull toward
+	// the account about to lose its week, not a tier jump.
+	const urgency = Math.max(0, URGENT_MS - left7);
 	const free7 = 1 - Math.min(r.pct7, 100) / 100;
 	const gate = Math.min(1, (1 - Math.min(r.pct5, 100) / 100) / 0.5);
 	return (
 		left7 -
+		urgency -
 		WEEKLY_QUOTA_WEIGHT * free7 -
 		FIVE_H_NUDGE * gate * (1 - left5 / WINDOW_5H) -
 		PRIORITY_WEIGHT * Math.max(-1, Math.min(1, r.prio))

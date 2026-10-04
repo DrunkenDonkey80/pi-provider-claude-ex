@@ -130,6 +130,10 @@ rank = time_left_7d  -  4.4d * free_7d  -  2d * gate * (1 - time_left_5h / 5h)
 gate = min(1, free_5h / 0.5)
 ```
 
+`time_left_7d` (in both formulas) excludes the upcoming night, 00:00-08:00
+local: quota expiring at 08:00 dies at midnight in practice. Only the ranking
+uses this; the displayed clock is the real one.
+
 **The weekly deadline is the spine**, because that is when unspent quota dies.
 Unused quota then pulls an account earlier: a week 20% spent has more going to
 waste than one 80% spent, so among accounts resetting around the same time, the

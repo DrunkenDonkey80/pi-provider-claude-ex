@@ -87,6 +87,24 @@ const FULL_PCT = 99;
 /** How long to park an account that reads full but states no reset time. */
 const APPEARS_FULL_MS = 3_600_000;
 
+/** Local hours treated as unused: 00:00-08:00. */
+const NIGHT_END_H = 8;
+
+/**
+ * The part of [from, to) that falls in the UPCOMING night (the current one if
+ * it is night now). Ranking subtracts it from the time left on the week: quota
+ * expiring at 08:00 tomorrow really dies tonight, since nobody spends it asleep.
+ * ponytail: one night only, per the user; later nights shift every account
+ * roughly equally and would need re-tuning WEEKLY_QUOTA_WEIGHT.
+ */
+export function upcomingNightMs(from: number, to: number): number {
+	const start = new Date(from);
+	if (start.getHours() >= NIGHT_END_H) start.setDate(start.getDate() + 1);
+	start.setHours(0, 0, 0, 0);
+	const end = new Date(start).setHours(NIGHT_END_H);
+	return Math.max(0, Math.min(end, to) - Math.max(start.getTime(), from));
+}
+
 /** Time left in a window; a whole window when the server states no reset. */
 function resetsIn(
 	w: UsageWindow | undefined,
@@ -129,10 +147,12 @@ export function switchScore(
 	entry: UsageEntry | undefined,
 	now = Date.now(),
 ): number {
-	const slack = (w: UsageWindow | undefined, windowMs: number): number =>
-		typeof w?.pct === "number"
-			? 1 - w.pct / 100 - resetsIn(w, windowMs, now) / windowMs
-			: 0;
+	const slack = (w: UsageWindow | undefined, windowMs: number): number => {
+		if (typeof w?.pct !== "number") return 0;
+		let left = resetsIn(w, windowMs, now);
+		if (windowMs === W7_MS) left -= upcomingNightMs(now, now + left);
+		return 1 - w.pct / 100 - left / windowMs;
+	};
 	const free5h =
 		typeof entry?.five_hour?.pct === "number" ? 1 - entry.five_hour.pct / 100 : 0;
 	return (
