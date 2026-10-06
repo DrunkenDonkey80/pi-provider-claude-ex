@@ -185,8 +185,9 @@ await check("ranking subtracts the upcoming night from the week", async () => {
 	assert.equal(upcomingNightMs(at(6, 10), at(6, 22)), 0);
 	// only one night, even across several
 	assert.equal(upcomingNightMs(at(6, 10), at(9, 10)) / H, 8);
-	// 20:00: rosi (30% free, reset 08:00 = 12h, really 4h) vs evening (25% free,
-	// reset 23:00 = 3h). By raw clock evening goes first; minus the night, rosi.
+	// 20:00: rosi (40% free, reset 08:00 = 12h, really 4h) vs evening (5% free,
+	// reset 23:00 = 3h). By raw clock evening goes first; minus the night the
+	// deadlines are close and rosi's unspent quota wins.
 	const now = at(6, 20);
 	const iso = (ms: number) => new Date(ms).toISOString();
 	const e = (reset: number, pct7: number) => ({
@@ -197,14 +198,14 @@ await check("ranking subtracts the upcoming night from the week", async () => {
 		format
 			.sortAccountsForDisplay(
 				[acct("evening"), acct("rosi")] as never,
-				{ evening: e(at(6, 23), 75), rosi: e(at(7, 8), 70) } as never,
+				{ evening: e(at(6, 23), 95), rosi: e(at(7, 8), 60) } as never,
 				now,
 			)
 			.map((a) => a.label),
 		["rosi", "evening"],
 	);
 	// Real pool, Sun 23:36: rgateva 86% used, 13h24m left (5h24m after the night)
-	// must beat home 60% used, 30h24m left: under 12h every hour counts double.
+	// must beat home 60% used, 30h24m left: under 12h the deadline pulls harder.
 	const sun = at(4, 23) + 36 * 60_000;
 	const row = (pct7: number, left7: number, left5: number) => ({
 		five_hour: { pct: 0, resets_at: iso(sun + left5) },
@@ -222,6 +223,28 @@ await check("ranking subtracts the upcoming night from the week", async () => {
 			)
 			.map((a) => a.label),
 		["rgateva", "home"],
+	);
+	// Real pool, Mon 22:24: home 91% used, 7h38m left (~1h36m after the night)
+	// must top everything, even dobrin's 5h window expiring in 18 minutes.
+	const mon = at(5, 22) + 24 * 60_000;
+	const live = (pct7: number, left7: number, left5?: number) => ({
+		five_hour: { pct: 0, resets_at: left5 === undefined ? undefined : iso(mon + left5) },
+		seven_day: { pct: pct7, resets_at: iso(mon + left7) },
+	});
+	assert.deepEqual(
+		format
+			.sortAccountsForDisplay(
+				[acct("dobrin"), acct("flex2"), acct("datecs"), acct("home")] as never,
+				{
+					dobrin: live(70, 41 * H, 0.3 * H),
+					flex2: live(77, 34.6 * H, 1.63 * H),
+					datecs: live(81, 27.6 * H, 2.8 * H),
+					home: live(91, 7.63 * H),
+				} as never,
+				mon,
+			)
+			.map((a) => a.label)[0],
+		"home",
 	);
 });
 

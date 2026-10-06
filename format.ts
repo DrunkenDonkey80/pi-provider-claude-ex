@@ -212,6 +212,8 @@ const FIVE_H_NUDGE = 2 * DAY;
 const PRIORITY_WEIGHT = 2 * DAY;
 /** Below this much real time left on the week, the deadline slope doubles. */
 const URGENT_MS = 12 * HOUR;
+/** The urgency pull at zero time left: outweighs quota, 5h nudge and priority. */
+const URGENT_MAX = WEEKLY_QUOTA_WEIGHT + FIVE_H_NUDGE + PRIORITY_WEIGHT;
 
 export const priorityMark = (p = 0): string =>
 	p > 0 ? "+".repeat(p) : "-".repeat(-p);
@@ -335,9 +337,11 @@ const readyRank = (
 ): number => {
 	const left5 = Math.min(Math.max(r.reset5 - now, 0), WINDOW_5H);
 	const left7 = Math.max(r.reset7 - now, 0) - upcomingNightMs(now, r.reset7);
-	// Under 12h of real time left, each hour counts double: a gentle pull toward
-	// the account about to lose its week, not a tier jump.
-	const urgency = Math.max(0, URGENT_MS - left7);
+	// Under 12h of real time left, a quadratic pull toward the account about to
+	// lose its week: slight at 11h (~1.4h), and near 0 worth more than every other
+	// term combined, so an expiring 5h window elsewhere can't outrank it.
+	const late = Math.max(0, URGENT_MS - left7) / URGENT_MS;
+	const urgency = URGENT_MAX * late * late;
 	const free7 = 1 - Math.min(r.pct7, 100) / 100;
 	const gate = Math.min(1, (1 - Math.min(r.pct5, 100) / 100) / 0.5);
 	return (

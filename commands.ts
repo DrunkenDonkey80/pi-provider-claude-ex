@@ -252,7 +252,7 @@ export function setupCommands(pi: ExtensionAPI): void {
 	// version-to-version churn.
 	const register = pi.registerCommand as unknown as Register;
 
-	register("claude-pool", {
+	const pool: Parameters<Register>[1] = {
 		description: "Open the Claude account pool",
 		handler: async (_args, ctx) => {
 			const store = readStore();
@@ -379,6 +379,13 @@ export function setupCommands(pi: ExtensionAPI): void {
 					await removeFromPool(pick.label);
 			}
 		},
+	};
+	register("claude-pool", pool);
+	pi.registerShortcut("f11", {
+		description: pool.description,
+		// SAFETY: same reason as `register` above — the shortcut ctx carries the
+		// same ui object a command ctx does, and the menu touches only Ui members.
+		handler: (ctx) => pool.handler("", ctx as unknown as Ctx),
 	});
 
 	register("claude-pool-add", {

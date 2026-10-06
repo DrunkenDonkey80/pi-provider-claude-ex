@@ -107,7 +107,7 @@ account between our reads — so the pool:
 * **falls back to cached numbers** if a read fails, and skips lineages that
   fail to refresh (dead) entirely.
 
-In the `/claude-pool` list, keys act on the hovered row: `enter` toggle
+`F11` opens the same list as `/claude-pool`. In the `/claude-pool` list, keys act on the hovered row: `enter` toggle
 favorite (green; several allowed), `w` toggle weekend (blue), `s` switch, `r` refresh usage, `+`/`-` priority, `d` enable/disable, `del` remove, `esc`
 close. Everything but a switch re-presents the updated list instead of closing it.
 
@@ -132,7 +132,9 @@ gate = min(1, free_5h / 0.5)
 
 `time_left_7d` (in both formulas) excludes the upcoming night, 00:00-08:00
 local: quota expiring at 08:00 dies at midnight in practice. Only the ranking
-uses this; the displayed clock is the real one.
+uses this; the displayed clock is the real one. Under 12h of that real time left, a
+quadratic urgency term pulls the account up: slight at 11h, and near zero it
+outweighs quota, the 5h nudge and priority combined.
 
 **The weekly deadline is the spine**, because that is when unspent quota dies.
 Unused quota then pulls an account earlier: a week 20% spent has more going to
