@@ -275,6 +275,8 @@ export type RefreshError =
 	| "transient"; // network/5xx/unparseable → retry later, token may live
 
 export interface RefreshOutcome {
+	/** Safe diagnostic metadata; never retain the token endpoint's body. */
+	status?: number;
 	credential?: AnthropicOAuthCredential;
 	error?: RefreshError;
 	/** Login (refresh-token) expiry in epoch ms, when the server reports it. */
@@ -283,7 +285,7 @@ export interface RefreshOutcome {
 
 export async function refreshGrant(refresh: string): Promise<RefreshOutcome> {
 	if (!refresh) return { error: "no_refresh_token" };
-	let response: Response;
+	let response: Response | undefined;
 	let body: string;
 	try {
 		response = await fetch(TOKEN_URL, {
@@ -298,7 +300,7 @@ export async function refreshGrant(refresh: string): Promise<RefreshOutcome> {
 		});
 		body = await response.text();
 	} catch {
-		return { error: "transient" };
+		return { error: "transient", status: response?.status };
 	}
 	if (!response.ok) {
 		if (
@@ -313,9 +315,9 @@ export async function refreshGrant(refresh: string): Promise<RefreshOutcome> {
 				err = undefined; // unparseable body → stay transient
 			}
 			if (err === "invalid_grant" || err === "invalid_client")
-				return { error: err };
+				return { error: err, status: response.status };
 		}
-		return { error: "transient" };
+		return { error: "transient", status: response.status };
 	}
 	let data: {
 		refresh_token?: string;
@@ -327,11 +329,13 @@ export async function refreshGrant(refresh: string): Promise<RefreshOutcome> {
 	try {
 		data = JSON.parse(body) as typeof data;
 	} catch {
-		return { error: "transient" };
+		return { error: "transient", status: response.status };
 	}
-	if (!data.access_token || !data.expires_in) return { error: "transient" };
+	if (!data.access_token || !data.expires_in)
+		return { error: "transient", status: response.status };
 	const refreshTtl = data.refresh_token_expires_in ?? data.refresh_expires_in;
 	return {
+		status: response.status,
 		credential: {
 			type: "oauth",
 			refresh: data.refresh_token ?? refresh,

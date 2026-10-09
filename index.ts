@@ -170,7 +170,7 @@ function setupPool(pi: ExtensionAPI): void {
 			// 401: the server rejected a token we thought was live. Force-refresh
 			// in place (the consume gate still declines to POST a spent grant).
 			if (AUTH_RE.test(msg.errorMessage) && !LIMIT_RE.test(msg.errorMessage)) {
-				const account = await ensureFresh(previous, { force: true });
+				const account = await ensureFresh(previous, { force: true, cause: "auth_error" });
 				ctx.ui.notify(
 					account && !account.dead
 						? `Claude account "${previous}" had a stale token — refreshed. Resend to continue.`

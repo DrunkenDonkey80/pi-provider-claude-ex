@@ -82,11 +82,24 @@ const CLOCK_W = 7;
 const PCT_W = 3;
 const BLANK_CLOCK = " ".repeat(CLOCK_W + 2); // the "(" and ")" too
 
+/**
+ * Under 12h of real time (the upcoming night excluded, as the ranking counts it)
+ * left on a week that still has quota: drain it now. Overrides DRAINED_PCT, which
+ * would otherwise silence the clock past 80%.
+ */
+function weekUrgent(entry: UsageEntry | undefined, now = Date.now()): boolean {
+	const w = entry?.seven_day;
+	const at = w?.resets_at ? Date.parse(w.resets_at) : Number.NaN;
+	if (!w || !Number.isFinite(at) || at <= now || w.pct >= 99) return false;
+	return at - now - upcomingNightMs(now, at) < URGENT_MS;
+}
+
 function window(
 	name: string,
 	w: { pct: number; resets_at?: string } | undefined,
 	redAt: number,
 	yellowAt: number,
+	urgent = false,
 ): string {
 	if (!w)
 		return `${name}${BLANK_CLOCK} [${"─".repeat(8)}] ${"—".padStart(PCT_W + 1)}`;
@@ -96,16 +109,18 @@ function window(
 	const at = w.resets_at ? Date.parse(w.resets_at) : Number.NaN;
 	// The clock and the bar are coloured independently: one says "time is running
 	// out", the other "quota is running out". They are not the same warning.
-	const clock = Number.isFinite(at)
-		? clockColor(
-				at - Date.now(),
-				pct,
-				redAt,
-				yellowAt,
-				`(${clockRelative(at - Date.now())})`,
-			)
-		: BLANK_CLOCK;
-	return `${name}${clock} ${quotaColor(pct, `[${bar}] ${String(pct).padStart(PCT_W)}%`)}`;
+	const clock = !Number.isFinite(at)
+		? BLANK_CLOCK
+		: urgent
+			? `(${clockRelative(at - Date.now())})`
+			: clockColor(
+					at - Date.now(),
+					pct,
+					redAt,
+					yellowAt,
+					`(${clockRelative(at - Date.now())})`,
+				);
+	return `${urgent ? red(name + clock) : name + clock} ${quotaColor(pct, `[${bar}] ${String(pct).padStart(PCT_W)}%`)}`;
 }
 
 export function accountState(account: Account, now = Date.now()): string {
@@ -140,7 +155,7 @@ export function accountLine(
 			`${isActive ? "▸" : " "} ${index + 1}. ${priorityMark(account.priority).padEnd(2)}`,
 		),
 		window("5h", entry?.five_hour, HOUR, 2 * HOUR),
-		window("7d", entry?.seven_day, DAY, 2 * DAY),
+		window("7d", entry?.seven_day, DAY, 2 * DAY, weekUrgent(entry)),
 		loginTag(account, entry),
 		resetsCell(entry),
 	];

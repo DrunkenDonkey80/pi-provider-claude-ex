@@ -26,6 +26,7 @@
 		"index.ts",
 		"oauth.ts",
 		"store.ts",
+		"auth-log.ts",
 		"pool.ts",
 		"usage.ts",
 		"tools.ts",

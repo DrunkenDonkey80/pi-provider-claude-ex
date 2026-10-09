@@ -35,8 +35,9 @@ refresh sweep per session. So:
 | — | best-effort cooperation with Claude Code's own `~/.claude/.oauth_refresh.lock` |
 | — | optional single-writer `cpool daemon` so N sessions don't sweep in parallel |
 
-Net effect: far fewer grants, and no two writers ever spending the same
-generation — which is what actually keeps a login alive.
+Net effect: far fewer grants and protection against same-machine rotation races.
+Access-token renewal does **not** extend a fixed refresh-token/login deadline,
+and cannot prevent server-side revocation. An expired login still needs `/login`.
 
 ## Commands (in pi)
 
@@ -183,9 +184,8 @@ use must not leave a 5h window open past the next 09:00. The row shows
 `wknd drain to N%`, `wknd locked` or `wknd reserve`. A manual switch (`s`) or
 making it a favorite (`enter`) overrides all of this.
 
-A **disabled** account is held out of rotation but still kept logged in: the
-keep-alive sweep refreshes its token like any other, so it is ready the moment
-you re-enable it. Only a `dead` lineage is left alone.
+A **disabled** account is held out of rotation but still refreshed like any
+other, until its login expires or is revoked. Only a `dead` lineage is left alone.
 
 ### Keeping 5h windows warm (off by default)
 
@@ -337,6 +337,22 @@ make one refresh, one poll, and one re-pick between them, not N. Sweeps also
 start at a random offset and jitter each tick, because a host that relaunches
 every saved session after a reboot would otherwise keep them firing in lockstep
 forever.
+
+## Auth monitoring
+
+Auth events are always recorded locally in `~/.pi/agent/claude-pool-auth.json`
+(or `PI_CODING_AGENT_DIR/claude-pool-auth.json`). The latest 500 events are kept
+under a cross-process lock: refresh attempts/results, DEAD transitions, sync
+checks/adoption/failures and successful publication. Events include UTC time,
+host/PID, short token-generation hashes, expiry timestamps and safe HTTP/error
+codes — never tokens, server response bodies or prompts. Recording failure does
+not fail a refresh. No additional polling or forced renewals are introduced.
+
+Update the extension and `/reload` on every machine to correlate rotation races.
+This starts new history; it cannot reconstruct failures from before installation.
+Unlike `PI_CLAUDE_PROVIDER_DEBUG_LOG`, it does not capture request payloads.
+Account labels and machine names are still identifying information; share
+only the relevant rows.
 
 ## Enrolling accounts
 

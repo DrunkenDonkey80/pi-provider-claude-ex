@@ -14,6 +14,7 @@ import fs, {
 	existsSync,
 } from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
+import childProcess from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -21,7 +22,8 @@ const dir = mkdtempSync(join(tmpdir(), "cpool-test-"));
 process.env.PI_CODING_AGENT_DIR = dir;
 
 const store = await import("./store.ts");
-const { parseUsage } = await import("./oauth.ts");
+const { parseUsage, refreshGrant } = await import("./oauth.ts");
+const authLog = await import("./auth-log.ts");
 const usage = await import("./usage.ts");
 const format = await import("./format.ts");
 const warm = await import("./warm.ts");
@@ -1048,7 +1050,9 @@ await check("the reset clock colours by urgency, unless drained", () => {
 			} as never,
 			false,
 		);
-		return line.slice(line.indexOf(w === "five_hour" ? "5h" : "7d"));
+		// Back up over a colour escape that may sit in front of the label.
+		const at = line.indexOf(w === "five_hour" ? "5h" : "7d");
+		return line.slice(line.slice(at - 5, at) === "\u001b[31m" ? at - 5 : at);
 	};
 	const HOUR = 3_600_000;
 	const DAY = 24 * HOUR;
@@ -1063,7 +1067,14 @@ await check("the reset clock colours by urgency, unless drained", () => {
 		"4h → no clock colour",
 	);
 	// 7d: red under a day, yellow under two
-	assert.ok(clock("seven_day", 10, 12 * HOUR).includes(red), "12h → red");
+	// 20h is never under 12h of real time (at most 8h of night comes off)
+	assert.ok(clock("seven_day", 10, 20 * HOUR).includes(red), "20h → red");
+	// under 12h real time with quota left: the whole "7d(clock)" is red, even
+	// past the 80% that silences a drained clock
+	assert.ok(
+		clock("seven_day", 88, 5 * HOUR).startsWith("\u001b[31m7d("),
+		"urgent 88% → red label",
+	);
 	assert.ok(clock("seven_day", 10, 36 * HOUR).includes(amber), "36h → yellow");
 	assert.ok(
 		!clock("seven_day", 10, 5 * DAY).includes("\u001b[3"),
@@ -1075,7 +1086,7 @@ await check("the reset clock colours by urgency, unless drained", () => {
 		"drained 5h → plain clock",
 	);
 	assert.ok(
-		!clock("seven_day", 95, 60 * 60_000).startsWith("7d\u001b[3"),
+		!clock("seven_day", 100, 60 * 60_000).includes("\u001b[31m7d"),
 		"drained 7d → plain clock",
 	);
 });
@@ -1318,6 +1329,178 @@ await check(
 		assert.equal(sync.syncReady({ url: "u", key: "" }), false, "key required");
 	},
 );
+
+await check("auth history is bounded, merges writers and excludes secrets", async () => {
+	writeFileSync(authLog.AUTH_LOG_PATH, JSON.stringify(Array.from({ length: authLog.AUTH_LOG_LIMIT }, (_, i) => ({ index: i }))));
+	const account = acct("monitor", { refresh: "refresh-secret-canary", access: "access-secret-canary" });
+	await Promise.all(Array.from({ length: 4 }, () => authLog.recordAuthEvent("refresh_start", account, {
+		cause: "manual", error: Object.assign(new Error("message-secret-canary"), { code: "EIO" }),
+		body: "body-secret-canary", access: "access-secret-canary",
+	} as never)));
+	const text = readFileSync(authLog.AUTH_LOG_PATH, "utf8");
+	const history = JSON.parse(text);
+	assert.equal(history.length, authLog.AUTH_LOG_LIMIT);
+	assert.equal(history.filter((x: { event?: string }) => x.event === "refresh_start").length, 4);
+	assert.equal(history[0].index, 4);
+	assert.equal(history.at(-1).generation, store.fingerprint(account.refresh));
+	assert.equal(history.at(-1).error, "EIO");
+	assert.ok(history.at(-1).host && history.at(-1).pid && Date.parse(history.at(-1).at));
+	assert.ok(!text.includes("secret-canary"), "credentials, messages and arbitrary details must not be serialized");
+});
+
+await check("refresh HTTP diagnostics preserve permanent vs transient classification", async () => {
+	const fetch = globalThis.fetch;
+	try {
+		for (const [status, body, expected] of [
+			[400, { error: "invalid_grant", error_description: "secret-canary" }, "invalid_grant"],
+			[401, { error: "invalid_client" }, "invalid_client"],
+			[401, { error: { type: "invalid_grant" } }, "transient"],
+			[429, { error: "invalid_grant" }, "transient"],
+			[503, { error: "invalid_grant" }, "transient"],
+		] as const) {
+			globalThis.fetch = async () => new Response(JSON.stringify(body), { status });
+			const result = await refreshGrant("rt-canary");
+			assert.equal(result.status, status);
+			assert.equal(result.error, expected);
+			assert.ok(!JSON.stringify(result).includes("secret-canary"));
+		}
+		globalThis.fetch = async () => { throw new Error("network-secret-canary"); };
+		assert.deepEqual(await refreshGrant("rt-canary"), { error: "transient", status: undefined });
+	} finally { globalThis.fetch = fetch; }
+});
+
+await check("DEAD records the rejected generation and HTTP failure without extra grants", async () => {
+	rmSync(authLog.AUTH_LOG_PATH, { force: true });
+	seed([acct("dead-monitor", { expires: 1, refreshExpires: Date.now() + 86_400_000 })]);
+	const fetch = globalThis.fetch;
+	let grants = 0;
+	globalThis.fetch = async () => {
+		grants++;
+		return new Response(JSON.stringify({ error: "invalid_grant", error_description: "secret-canary" }), { status: 400 });
+	};
+	try {
+		const next = await (await import("./pool.ts")).ensureFresh("dead-monitor");
+		assert.equal(next?.dead, true);
+		assert.equal(grants, 1);
+		const text = readFileSync(authLog.AUTH_LOG_PATH, "utf8");
+		const history = JSON.parse(text);
+		assert.deepEqual(history.map((x: { event: string }) => x.event), ["refresh_start", "refresh_failed", "dead"]);
+		assert.equal(history[1].status, 400);
+		assert.equal(history[2].error, "invalid_grant");
+		assert.equal(history[2].generation, store.fingerprint("rt-dead-monitor-1"));
+		assert.ok(history[2].refreshExpires > Date.now());
+		assert.ok(!text.includes("secret-canary") && !text.includes("rt-dead-monitor-1"));
+	} finally { globalThis.fetch = fetch; }
+});
+
+await check("sync fetch failure remains visible when rescue finds only the rejected token", async () => {
+	rmSync(authLog.AUTH_LOG_PATH, { force: true });
+	const account = acct("sync-monitor", { expires: 1 });
+	const config = { url: "unused-test-remote", key: sync.newKey() };
+	writeFileSync(store.POOL_PATH, JSON.stringify({ accounts: [account], sync: config }));
+	fs.mkdirSync(join(sync.SYNC_DIR, ".git"), { recursive: true });
+	fs.mkdirSync(join(sync.SYNC_DIR, "accounts"), { recursive: true });
+	writeFileSync(join(sync.SYNC_DIR, sync.credPath(account.label, config.key)), sync.seal(sync.credOf(account), config.key));
+	const fetch = globalThis.fetch;
+	const exec = childProcess.execFileSync;
+	childProcess.execFileSync = ((_file: string, args: string[]) => {
+		assert.ok(!args.includes("push"), "this failure path must not publish or run real git");
+		if (args[0] === "fetch") throw Object.assign(new Error("stderr-secret-canary"), { status: 128 });
+		return "";
+	}) as typeof exec;
+	syncBuiltinESMExports();
+	globalThis.fetch = async () => new Response('{"error":"invalid_grant"}', { status: 400 });
+	try {
+		const next = await (await import("./pool.ts")).ensureFresh(account.label);
+		assert.equal(next?.dead, true);
+		const text = readFileSync(authLog.AUTH_LOG_PATH, "utf8");
+		const history = JSON.parse(text);
+		assert.ok(history.some((x: { event: string; error?: number }) => x.event === "sync_fetch_failed" && x.error === 128));
+		assert.equal(history.filter((x: { result?: string }) => x.result === "same_generation").length, 2);
+		assert.equal(history.at(-1).event, "dead");
+		assert.ok(!text.includes("secret-canary") && !text.includes(config.key));
+	} finally {
+		globalThis.fetch = fetch;
+		childProcess.execFileSync = exec;
+		syncBuiltinESMExports();
+		rmSync(sync.SYNC_DIR, { recursive: true, force: true });
+	}
+});
+
+await check("auth history identifies successful rotations and sync rescue without extra POSTs", async () => {
+	const fetch = globalThis.fetch;
+	const exec = childProcess.execFileSync;
+	try {
+		rmSync(authLog.AUTH_LOG_PATH, { force: true });
+		seed([acct("ok-monitor", { expires: 1 })]);
+		globalThis.fetch = async () => new Response(JSON.stringify({ access_token: "access-canary", refresh_token: "refresh-canary", expires_in: 3600 }));
+		await (await import("./pool.ts")).ensureFresh("ok-monitor", { force: true, cause: "manual" });
+		let history = JSON.parse(readFileSync(authLog.AUTH_LOG_PATH, "utf8"));
+		assert.equal(history[0].cause, "manual");
+		assert.equal(history.at(-1).event, "refresh_ok");
+		assert.equal(history.at(-1).status, 200);
+		assert.equal(history.at(-1).fromGeneration, store.fingerprint("rt-ok-monitor-1"));
+		assert.equal(history.at(-1).generation, store.fingerprint("refresh-canary"));
+		assert.ok(!JSON.stringify(history).includes("canary"));
+
+		childProcess.execFileSync = (() => "") as typeof exec; // No live git, including pushes.
+		syncBuiltinESMExports();
+		fs.mkdirSync(join(sync.SYNC_DIR, ".git"), { recursive: true });
+		fs.mkdirSync(join(sync.SYNC_DIR, "accounts"), { recursive: true });
+		for (const readyBeforePost of [true, false]) {
+			rmSync(authLog.AUTH_LOG_PATH, { force: true });
+			const account = acct("rescue-monitor", { expires: 1 });
+			const config = { url: "unused-test-remote", key: sync.newKey() };
+			writeFileSync(store.POOL_PATH, JSON.stringify({ accounts: [account], sync: config }));
+			const file = join(sync.SYNC_DIR, sync.credPath(account.label, config.key));
+			const remote = { ...sync.credOf(account), refresh: "remote-refresh-canary", access: "remote-access-canary", expires: Date.now() + 3_600_000, by: "other-host" };
+			writeFileSync(file, sync.seal(readyBeforePost ? remote : sync.credOf(account), config.key));
+			let posts = 0;
+			globalThis.fetch = async () => {
+				posts++;
+				writeFileSync(file, sync.seal(remote, config.key));
+				return new Response('{"error":"invalid_grant"}', { status: 400 });
+			};
+			const next = await (await import("./pool.ts")).ensureFresh(account.label);
+			assert.equal(next?.dead, false);
+			assert.equal(posts, readyBeforePost ? 0 : 1);
+			history = JSON.parse(readFileSync(authLog.AUTH_LOG_PATH, "utf8"));
+			assert.equal(history.at(-1).event, "sync_adopt");
+			assert.equal(history.at(-1).by, "other-host");
+			assert.equal(history.at(-1).generation, store.fingerprint(remote.refresh));
+			assert.ok(!history.some((x: { event: string }) => x.event === "dead"));
+			assert.ok(!JSON.stringify(history).includes("canary"));
+		}
+	} finally {
+		globalThis.fetch = fetch;
+		childProcess.execFileSync = exec;
+		syncBuiltinESMExports();
+		rmSync(sync.SYNC_DIR, { recursive: true, force: true });
+	}
+});
+
+await check("auth log write failure cannot lose a successfully refreshed credential", async () => {
+	seed([acct("write-monitor", { expires: 1 })]);
+	const fetch = globalThis.fetch;
+	const write = fs.writeFileSync;
+	fs.writeFileSync = ((path: fs.PathOrFileDescriptor, ...args: unknown[]) => {
+		if (String(path).startsWith(authLog.AUTH_LOG_PATH)) throw Object.assign(new Error("disk-secret-canary"), { code: "EIO" });
+		return (write as (...args: unknown[]) => void)(path, ...args);
+	}) as typeof write;
+	syncBuiltinESMExports();
+	globalThis.fetch = async () => new Response(JSON.stringify({ access_token: "new-access-canary", refresh_token: "new-refresh-canary", expires_in: 3600 }));
+	try {
+		const next = await (await import("./pool.ts")).ensureFresh("write-monitor");
+		assert.equal(next?.refresh, "new-refresh-canary");
+		assert.equal(next?.dead, false);
+		assert.equal(store.readStore().accounts[0].refresh, "new-refresh-canary");
+		assert.equal(existsSync(`${authLog.AUTH_LOG_PATH}.lock`), false);
+	} finally {
+		globalThis.fetch = fetch;
+		fs.writeFileSync = write;
+		syncBuiltinESMExports();
+	}
+});
 
 console.log(results.join("\n"));
 rmSync(dir, { recursive: true, force: true });

@@ -7,7 +7,8 @@
  *     expiry. Upstream swept every account every 4 minutes; every extra grant
  *     is another chance to lose a rotation race, so fewer grants = longer life.
  *   - A lineage unused for KEEPALIVE_MS is exercised once, on purpose, so the
- *     refresh token never lapses from disuse. That is the only proactive grant.
+ *     refresh token doesn't lapse from disuse. It cannot extend an absolute
+ *     login deadline or undo revocation. That is the only proactive grant.
  *   - Every grant goes through a per-lineage lock with a consume-gate re-read,
  *     so N pi sessions + the daemon can never POST the same generation.
  *   - A transient failure quarantines briefly; only a server-side
@@ -21,6 +22,7 @@ import {
 	type Store,
 	type SyncConfig,
 	findAccount,
+	fingerprint,
 	mutateStore,
 	readJson,
 	readStore,
@@ -31,6 +33,7 @@ import {
 	writeJsonAtomic,
 } from "./store.ts";
 import { type RefreshError, refreshGrant } from "./oauth.ts";
+import { type RefreshCause, recordAuthEvent } from "./auth-log.ts";
 import { WEEKEND_HELD, accountTier, sortAccountsForDisplay } from "./format.ts";
 import {
 	SERVE_TTL_MS,
@@ -213,6 +216,7 @@ async function applyRefreshError(
 		return account;
 	});
 	invalidateSnapshot();
+	if (result?.dead) await recordAuthEvent("dead", result, { error });
 	log(`refresh failed ${label}: ${error}`);
 	return result;
 }
@@ -240,11 +244,19 @@ async function adoptRemote(
 	config: SyncConfig,
 ): Promise<Account | undefined> {
 	const remote = await pullCred(label, config);
-	if (!remote || remote.refresh === current.refresh) return undefined;
+	if (!remote || remote.refresh === current.refresh) {
+		await recordAuthEvent("sync_check", current, {
+			result: remote ? "same_generation" : "unavailable", by: remote?.by,
+		});
+		return undefined;
+	}
 	if (mode === "newer") {
-		// Must beat ours AND actually be usable, or adopting solves nothing.
-		if (remote.expires <= current.expires) return undefined;
-		if (remote.expires <= Date.now() + ACCESS_BUFFER_MS) return undefined;
+		if (remote.expires <= current.expires || remote.expires <= Date.now() + ACCESS_BUFFER_MS) {
+			await recordAuthEvent("sync_check", current, {
+				result: remote.expires <= current.expires ? "not_newer" : "expiring", by: remote.by,
+			});
+			return undefined;
+		}
 	}
 	const saved = await mutateStore((store) => {
 		const account = findAccount(store, label);
@@ -259,6 +271,9 @@ async function adoptRemote(
 		return account;
 	});
 	invalidateSnapshot();
+	if (saved) await recordAuthEvent("sync_adopt", saved, {
+		fromGeneration: fingerprint(current.refresh), by: remote.by,
+	});
 	log(`adopted ${label} from ${remote.by} (sync)`);
 	return saved;
 }
@@ -277,7 +292,7 @@ async function adoptRemote(
  */
 export async function ensureFresh(
 	label: string,
-	opts: { force?: boolean } = {},
+	opts: { force?: boolean; cause?: RefreshCause } = {},
 ): Promise<Account | undefined> {
 	const before = findAccount(readStore(), label);
 	if (!before) return before;
@@ -285,6 +300,7 @@ export async function ensureFresh(
 	if (!opts.force && before.expires > Date.now() + ACCESS_BUFFER_MS)
 		return before;
 
+	let stage: "lock" | "sync" | "grant" | "persist" | "publish" = "lock";
 	try {
 		return await withDirLock(
 			refreshLockDir(label),
@@ -293,25 +309,35 @@ export async function ensureFresh(
 				// rotated this lineage makes our snapshot a spent generation.
 				const current = findAccount(readStore(), label);
 				if (!current) return undefined;
-				if (current.refresh !== before.refresh) return current;
+				if (current.refresh !== before.refresh) {
+					await recordAuthEvent("local_adopt", current, { fromGeneration: fingerprint(before.refresh) });
+					return current;
+				}
 				if (!opts.force && current.expires > Date.now() + ACCESS_BUFFER_MS)
 					return current;
 
 				// Another machine may already have rotated this lineage. Taking its
 				// token costs no grant and cannot lose the single-use race.
 				const config = readStore().sync;
+				stage = "sync";
 				if (syncOn(config)) {
 					const adopted = await adoptRemote(label, current, "newer", config);
 					if (adopted) return adopted;
 				}
 
+				stage = "grant";
+				await recordAuthEvent("refresh_start", current, {
+					cause: opts.cause ?? (opts.force ? "forced" : "expiry"), syncEnabled: syncOn(config),
+				});
 				const outcome = await withClaudeCodeRefreshLock(() =>
 					refreshGrant(current.refresh),
 				);
 				if (!outcome.credential) {
+					await recordAuthEvent("refresh_failed", current, { status: outcome.status, error: outcome.error });
 					// `invalid_grant` means someone else spent this generation. If they
 					// published the successor, this is a hiccup rather than a death.
 					if (outcome.error === "invalid_grant" && syncOn(config)) {
+						stage = "sync";
 						const rescued = await adoptRemote(label, current, "any", config);
 						if (rescued) return rescued;
 					}
@@ -326,6 +352,7 @@ export async function ensureFresh(
 				};
 				// Durable successor BEFORE the store write: if the write dies here,
 				// readStore() adopts this instead of re-POSTing a spent token.
+				stage = "persist";
 				stashPut(label, next);
 				const saved = await mutateStore((store) => {
 					const account = findAccount(store, label);
@@ -338,11 +365,15 @@ export async function ensureFresh(
 				});
 				stashDrop(label, next.refresh);
 				invalidateSnapshot();
+				if (saved) await recordAuthEvent("refresh_ok", saved, {
+					status: outcome.status, fromGeneration: fingerprint(current.refresh),
+				});
 				log(`refreshed ${label} (exp ${new Date(next.expires).toISOString()})`);
 
 				// Publish so the other machines can ride this token instead of
 				// spending their own copy of a lineage we just rotated away.
 				if (saved && syncOn(config)) {
+					stage = "publish";
 					const beatUs = await pushCred(credOf(saved), config);
 					if (beatUs)
 						return (await adoptRemote(label, saved, "newer", config)) ?? saved;
@@ -352,6 +383,7 @@ export async function ensureFresh(
 			{ timeoutMs: 45_000, staleMs: 120_000 },
 		);
 	} catch (e) {
+		await recordAuthEvent("refresh_exception", before, { stage, error: e });
 		log(`refresh lock busy for ${label}: ${(e as Error).message}`);
 		return findAccount(readStore(), label); // another holder is doing it
 	}
@@ -582,7 +614,7 @@ export async function tick(opts: { usage?: boolean } = {}): Promise<void> {
 			log(
 				`keep-alive grant for ${account.label} (idle ${Math.round(idle / 86_400_000)}d)`,
 			);
-			await ensureFresh(account.label, { force: true });
+			await ensureFresh(account.label, { force: true, cause: "keepalive" });
 		}
 	}
 	// Publish live credentials on a cadence, not only when one rotates. A machine

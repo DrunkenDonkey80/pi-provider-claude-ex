@@ -191,7 +191,7 @@ switch (command) {
 				]
 			: store.accounts;
 		for (const account of picks) {
-			const next = await ensureFresh(account.label, { force: true });
+			const next = await ensureFresh(account.label, { force: true, cause: "manual" });
 			console.log(
 				`${account.label}: ${
 					next?.dead

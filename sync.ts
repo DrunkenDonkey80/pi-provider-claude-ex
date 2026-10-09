@@ -43,6 +43,7 @@ import {
 import { hostname } from "node:os";
 import { join } from "node:path";
 import { AGENT_DIR, type SyncConfig, withLock } from "./store.ts";
+import { recordAuthEvent } from "./auth-log.ts";
 
 export const SYNC_DIR = join(AGENT_DIR, "claude-pool-sync");
 
@@ -127,7 +128,8 @@ function fetchLatest(): void {
 		git(["fetch", "--quiet", "--depth", "1", "origin"]);
 		git(["reset", "--quiet", "--hard", "FETCH_HEAD"]);
 		git(["clean", "-qfd"]);
-	} catch {
+	} catch (error) {
+		void recordAuthEvent("sync_fetch_failed", { label: "(sync)" }, { error });
 		// An empty remote has nothing to fetch — that is the first-push case.
 	}
 }
@@ -152,6 +154,7 @@ function readLocalCopy(
 	const file = join(SYNC_DIR, credPath(label, config.key));
 	if (!existsSync(file)) return undefined;
 	const cred = open<SyncedCred>(readFileSync(file, "utf-8"), config.key);
+	if (!cred) void recordAuthEvent("sync_failed", { label }, { error: "invalid_blob" });
 	return typeof cred?.refresh === "string" && typeof cred.expires === "number"
 		? cred
 		: undefined;
@@ -174,7 +177,8 @@ export async function pullCred(
 			},
 			{ timeoutMs: 20_000 },
 		);
-	} catch {
+	} catch (error) {
+		await recordAuthEvent("sync_failed", { label }, { error });
 		return undefined;
 	}
 }
@@ -215,8 +219,10 @@ export async function pushCred(
 					}
 					try {
 						git(["push", "--quiet", "origin", "HEAD"]);
+						void recordAuthEvent("sync_published", cred);
 						return undefined;
-					} catch {
+					} catch (error) {
+						void recordAuthEvent("sync_push_failed", cred, { error });
 						fetchLatest(); // rejected: someone pushed first, re-read and retry
 					}
 				}
@@ -224,7 +230,8 @@ export async function pushCred(
 			},
 			{ timeoutMs: 30_000 },
 		);
-	} catch {
+	} catch (error) {
+		await recordAuthEvent("sync_failed", cred, { error });
 		return undefined;
 	}
 }
@@ -251,7 +258,8 @@ export async function pullAll(
 			},
 			{ timeoutMs: 20_000 },
 		);
-	} catch {
+	} catch (error) {
+		await recordAuthEvent("sync_failed", { label: "(sync)" }, { error });
 		return new Map();
 	}
 }
@@ -289,8 +297,10 @@ export async function pushAll(
 					}
 					try {
 						git(["push", "--quiet", "origin", "HEAD"]);
+						for (const cred of creds) void recordAuthEvent("sync_published", cred);
 						return written;
-					} catch {
+					} catch (error) {
+						void recordAuthEvent("sync_push_failed", { label: "(sync)" }, { error });
 						fetchLatest(); // lost the push race: re-read and retry
 					}
 				}
@@ -298,7 +308,8 @@ export async function pushAll(
 			},
 			{ timeoutMs: 40_000 },
 		);
-	} catch {
+	} catch (error) {
+		await recordAuthEvent("sync_failed", { label: "(sync)" }, { error });
 		return 0;
 	}
 }

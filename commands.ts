@@ -753,7 +753,7 @@ export async function toggleDisabled(label: string): Promise<boolean> {
  * (dead is our own guess) and, if it stays dead, say who really serves.
  */
 async function switchReport(label: string): Promise<string> {
-	const account = await ensureFresh(label, { force: true });
+	const account = await ensureFresh(label, { force: true, cause: "manual" });
 	if (!account?.dead)
 		return `Claude account → "${label}". Next request uses it.`;
 	const serving = pickActive(readStore());
