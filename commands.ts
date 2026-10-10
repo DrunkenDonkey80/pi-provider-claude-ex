@@ -797,7 +797,12 @@ export async function upsertAccount(
 		};
 		const index = store.accounts.findIndex((a) => a.label === label);
 		if (index >= 0)
-			store.accounts[index] = { ...store.accounts[index], ...entry };
+			store.accounts[index] = {
+				...store.accounts[index], ...entry,
+				// A new login cannot inherit the replaced login's deadline.
+				refreshExpires: store.accounts[index].refresh === creds.refresh
+					? store.accounts[index].refreshExpires : undefined,
+			};
 		else store.accounts.push(entry);
 		if (!store.active) store.active = label;
 		return store.accounts.length;

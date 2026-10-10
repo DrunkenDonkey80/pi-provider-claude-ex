@@ -296,7 +296,7 @@ export function readStore(): Store {
 		acct.refresh = s.refresh;
 		acct.access = s.access;
 		acct.expires = s.expires;
-		if (s.refreshExpires) acct.refreshExpires = s.refreshExpires;
+		acct.refreshExpires = s.refreshExpires;
 		acct.lastGrantAt = s.at;
 		acct.dead = false; // a stashed successor is proof the lineage was alive
 	}

@@ -113,10 +113,11 @@ await check(
 );
 
 await check("stashDrop only retires the generation it persisted", () => {
-	seed([acct("a")]);
+	seed([acct("a", { refreshExpires: Date.now() - 1_000 })]);
 	store.stashPut("a", { refresh: "rt-a-2", access: "at-a-2", expires: 1 });
 	store.stashDrop("a", "rt-a-OLD"); // a stale retire must not delete a newer row
 	assert.equal(store.readStore().accounts[0].refresh, "rt-a-2");
+	assert.equal(store.readStore().accounts[0].refreshExpires, undefined, "unknown successor expiry must not inherit an old deadline");
 	store.stashDrop("a", "rt-a-2");
 	assert.equal(store.readStore().accounts[0].refresh, "rt-a-1");
 });
@@ -526,6 +527,43 @@ await check(
 		rmSync(join(dir, "auth.json"), { force: true });
 	},
 );
+
+await check("a fresh login clears the replaced deadline without clearing user preferences", async () => {
+	const commands = await import("./commands.ts");
+	const fetch = globalThis.fetch;
+	const creds = { refresh: "new-login-refresh", access: "new-login-access", expires: Date.now() + 8 * 3_600_000 };
+	seed([acct("relogin", { dead: true, refreshExpires: Date.now() - 1_000, priority: 2, favorite: true, favoriteUntil: Date.now() + 3_600_000, weekend: true })]);
+	store.writeJsonAtomic(join(dir, "auth.json"), { anthropic: creds });
+	store.writeJsonAtomic(store.USAGE_PATH, { relogin: { at: Date.now(), seven_day: { pct: 53 } } });
+	let calls = 0;
+	globalThis.fetch = async (url, init) => {
+		calls++;
+		assert.ok(String(url).endsWith("/oauth/profile"), "reattaching must not spend a refresh grant");
+		assert.equal(init?.method ?? "GET", "GET");
+		return new Response(JSON.stringify({ account: { uuid: "login-owner" }, organization: { uuid: "team-org" } }));
+	};
+	try {
+		assert.equal((await commands.attachCurrentLogin("relogin"))?.label, "relogin");
+		const account = store.readStore().accounts[0];
+		assert.equal(account.refresh, creds.refresh);
+		assert.equal(account.access, creds.access);
+		assert.equal(account.dead, false);
+		assert.equal(account.refreshExpires, undefined);
+		assert.equal(account.priority, 2);
+		assert.equal(account.favorite, true);
+		assert.equal(account.weekend, true);
+		assert.match(format.accountLine(account, 0, usage.readUsage().relogin, false), /\[OK\]/);
+		assert.equal(calls, 1);
+
+		const knownDeadline = Date.now() + 30 * 86_400_000;
+		await store.mutateStore((s) => { s.accounts[0].refreshExpires = knownDeadline; });
+		await commands.upsertAccount("relogin", creds);
+		assert.equal(store.readStore().accounts[0].refreshExpires, knownDeadline, "re-adding the same credential keeps its known deadline");
+	} finally {
+		globalThis.fetch = fetch;
+		rmSync(join(dir, "auth.json"), { force: true });
+	}
+});
 
 await check(
 	"pickActive skips dead/disabled/cooling and prefers most quota",
@@ -1542,11 +1580,11 @@ await check("auth history identifies successful rotations and sync rescue withou
 		fs.mkdirSync(join(sync.SYNC_DIR, "accounts"), { recursive: true });
 		for (const readyBeforePost of [true, false]) {
 			rmSync(authLog.AUTH_LOG_PATH, { force: true });
-			const account = acct("rescue-monitor", { expires: 1 });
+			const account = acct("rescue-monitor", { expires: 1, refreshExpires: Date.now() - 1_000 });
 			const config = { url: "unused-test-remote", key: sync.newKey() };
 			writeFileSync(store.POOL_PATH, JSON.stringify({ accounts: [account], sync: config }));
 			const file = join(sync.SYNC_DIR, sync.credPath(account.label, config.key));
-			const remote = { ...sync.credOf(account), refresh: "remote-refresh-canary", access: "remote-access-canary", expires: Date.now() + 3_600_000, by: "other-host" };
+			const remote = { ...sync.credOf(account), refresh: "remote-refresh-canary", access: "remote-access-canary", expires: Date.now() + 3_600_000, refreshExpires: undefined, by: "other-host" };
 			writeFileSync(file, sync.seal(readyBeforePost ? remote : sync.credOf(account), config.key));
 			let posts = 0;
 			globalThis.fetch = async () => {
@@ -1556,6 +1594,7 @@ await check("auth history identifies successful rotations and sync rescue withou
 			};
 			const next = await (await import("./pool.ts")).ensureFresh(account.label);
 			assert.equal(next?.dead, false);
+			assert.equal(next?.refreshExpires, undefined, "synced replacements must not inherit an expired deadline");
 			assert.equal(posts, readyBeforePost ? 0 : 1);
 			history = JSON.parse(readFileSync(authLog.AUTH_LOG_PATH, "utf8"));
 			assert.equal(history.at(-1).event, "sync_adopt");

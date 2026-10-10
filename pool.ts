@@ -264,7 +264,7 @@ async function adoptRemote(
 		account.refresh = remote.refresh;
 		account.access = remote.access;
 		account.expires = remote.expires;
-		if (remote.refreshExpires) account.refreshExpires = remote.refreshExpires;
+		account.refreshExpires = remote.refreshExpires;
 		account.lastGrantAt = remote.at;
 		account.strikes = 0;
 		account.dead = false; // a newer generation proves the lineage is alive
