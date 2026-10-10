@@ -312,6 +312,99 @@ await check("a favorite overrides a non-favorite pin", async () => {
 	pool.invalidateSnapshot();
 });
 
+await check("Enter favorites expire at their own weekly reset and release only automatic pins", async () => {
+	const { toggleFlag } = await import("./commands.ts");
+	const clock = Date.now;
+	let now = clock();
+	Date.now = () => now;
+	const reset = now + 3_600_000;
+	try {
+		seed([acct("first", { priority: 2, weekend: true }), acct("second")]);
+		store.writeJsonAtomic(store.USAGE_PATH, {
+			first: { five_hour: { pct: 10, resets_at: new Date(now + 60_000).toISOString() }, seven_day: { pct: 88, resets_at: new Date(reset).toISOString() } },
+			second: { seven_day: { pct: 80, resets_at: new Date(reset + 3_600_000).toISOString() } },
+		});
+		await toggleFlag("first", "favorite");
+		await toggleFlag("second", "favorite");
+		assert.equal(store.readStore().accounts[0].favoriteUntil, reset);
+		await toggleFlag("first", "favorite");
+		assert.equal(store.readStore().accounts[0].favoriteUntil, undefined, "Enter again cancels the deadline");
+		await toggleFlag("first", "favorite");
+		await store.mutateStore((s) => { s.active = "first"; });
+		now += 60_000;
+		assert.equal(store.readStore().accounts[0].favorite, true, "5h resets do not clear green");
+		now = reset - 1;
+		assert.equal(store.readStore().accounts[0].favorite, true, "night-adjusted urgency does not expire it early");
+		now = reset;
+		let after = store.readStore();
+		assert.equal(after.accounts[0].favorite, undefined);
+		assert.equal(after.accounts[0].favoriteUntil, undefined);
+		assert.equal(after.accounts[0].priority, 2);
+		assert.equal(after.accounts[0].weekend, true);
+		assert.equal(after.accounts[1].favorite, true, "other green accounts keep their own deadlines");
+		assert.equal(after.active, undefined);
+		assert.equal((await import("./pool.ts")).pickActive(after), "second");
+		await store.mutateStore(() => {});
+		assert.equal(JSON.parse(readFileSync(store.POOL_PATH, "utf8")).accounts[0].favorite, undefined);
+
+		await store.mutateStore((s) => {
+			s.accounts[0].favorite = true;
+			s.accounts[0].favoriteUntil = now + 1;
+			s.active = "first";
+			s.manualPin = true;
+		});
+		now++;
+		after = store.readStore();
+		assert.equal(after.accounts[0].favorite, undefined);
+		assert.equal(after.active, "first", "an explicit s switch is a separate preference");
+	} finally {
+		Date.now = clock;
+	}
+});
+
+await check("unknown weekly deadlines wait for usage; stale prior weeks cannot clear a new favorite", async () => {
+	const { toggleFlag } = await import("./commands.ts");
+	const fetch = globalThis.fetch;
+	const reset = Date.now() + 86_400_000;
+	try {
+		for (const resets_at of [undefined, "invalid", new Date(Date.now() - 1_000).toISOString()]) {
+			seed([acct("pending")]);
+			store.writeJsonAtomic(store.USAGE_PATH, { pending: { seven_day: { pct: 80, resets_at } } });
+			await toggleFlag("pending", "favorite");
+			assert.equal(store.readStore().accounts[0].favoriteUntil, null);
+			assert.equal(store.readStore().accounts[0].favorite, true);
+			let calls = 0;
+			globalThis.fetch = async () => {
+				calls++;
+				return new Response(JSON.stringify({ seven_day: { utilization: 5, resets_at: new Date(reset).toISOString() } }));
+			};
+			await usage.collectUsage(["pending"], async () => "test-token", { force: true });
+			assert.equal(calls, 1);
+			assert.equal(store.readStore().accounts[0].favoriteUntil, reset);
+			assert.equal(store.readStore().accounts[0].favorite, true);
+		}
+	} finally { globalThis.fetch = fetch; }
+});
+
+await check("existing green accounts clear before refreshed usage overwrites the expired week", async () => {
+	const fetch = globalThis.fetch;
+	try {
+		seed([acct("legacy", { favorite: true })]);
+		store.writeJsonAtomic(store.USAGE_PATH, { legacy: { seven_day: { pct: 80, resets_at: new Date(Date.now() - 1_000).toISOString() } } });
+		globalThis.fetch = async () => new Response(JSON.stringify({ seven_day: { utilization: 0, resets_at: new Date(Date.now() + 7 * 86_400_000).toISOString() } }));
+		await usage.collectUsage(["legacy"], async () => "test-token", { force: true });
+		assert.equal(store.readStore().accounts[0].favorite, undefined);
+		assert.equal(JSON.parse(readFileSync(store.POOL_PATH, "utf8")).accounts[0].favorite, undefined);
+
+		const oldReset = Date.now() + 3_600_000;
+		seed([acct("legacy", { favorite: true })]);
+		store.writeJsonAtomic(store.USAGE_PATH, { legacy: { seven_day: { pct: 80, resets_at: new Date(oldReset).toISOString() } } });
+		await usage.collectUsage(["legacy"], async () => "test-token", { force: true });
+		assert.equal(store.readStore().accounts[0].favoriteUntil, oldReset, "a newly fetched reset must not extend an existing favorite");
+		assert.equal(JSON.parse(readFileSync(store.POOL_PATH, "utf8")).accounts[0].favoriteUntil, oldReset);
+	} finally { globalThis.fetch = fetch; }
+});
+
 // A dead pin turns off stickiness: pickActive re-scores the cache on every
 // call, so the account in use drifts every time the numbers move. pickNext
 // must write its choice down. One usable candidate = no refresh, no network.

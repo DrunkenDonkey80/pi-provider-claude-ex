@@ -109,14 +109,14 @@ account between our reads — so the pool:
   fail to refresh (dead) entirely.
 
 `F11` opens the same list as `/claude-pool`. In the `/claude-pool` list, keys act on the hovered row: `enter` toggle
-favorite (green; several allowed), `w` toggle weekend (blue), `s` switch, `r` refresh usage, `+`/`-` priority, `d` enable/disable, `del` remove, `esc`
+favorite (green; several allowed; clears at that account's next 7d reset), `w` toggle weekend (blue), `s` switch, `r` refresh usage, `+`/`-` priority, `d` enable/disable, `del` remove, `esc`
 close. Everything but a switch re-presents the updated list instead of closing it.
 
 **Priority** (shown after the row number) bends the ranking below:
 
 | mark | effect |
 | --- | --- |
-| favorite | green row, toggled with `enter`: tier above `++`, and takes over from any non-favorite pin — always used while usable |
+| favorite | green row, toggled with `enter`: tier above `++`, and takes over from any non-favorite pin — used while usable, automatically clears at its next 7d reset |
 | weekend | blue row, toggled with `w`: an office-hours reserve, see below |
 | `++` | its own tier: first whenever it is usable |
 | `+` | ranks as if its week reset 2 days sooner — drained first unless a normal account is about to lose real quota (25% left under ~1.7d, 50% under ~2.8d) |

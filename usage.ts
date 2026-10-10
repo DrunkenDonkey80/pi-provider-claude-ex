@@ -11,7 +11,7 @@
  * repainting a list costs zero requests.
  */
 
-import { USAGE_PATH, readJson, withLock, writeJsonAtomic } from "./store.ts";
+import { POOL_PATH, USAGE_PATH, type Store, mutateStore, readJson, withLock, writeJsonAtomic } from "./store.ts";
 import {
 	UsageHttpError,
 	fetchUsage,
@@ -231,6 +231,18 @@ export async function collectUsage(
 		}
 		try {
 			const snapshot = await fetchUsage(token);
+			const stored = readJson<Store>(POOL_PATH, { accounts: [] });
+			if (Array.isArray(stored.accounts) && stored.accounts.some(
+				(a) => a.label === label && a.favorite && a.favoriteUntil == null,
+			)) {
+				// Persist the old deadline before replacing its cached usage window.
+				await mutateStore((store) => {
+					const account = store.accounts.find((a) => a.label === label);
+					const at = Date.parse(snapshot.seven_day?.resets_at ?? "");
+					if (account?.favorite && account.favoriteUntil == null && Number.isFinite(at) && at > Date.now())
+						account.favoriteUntil = at;
+				});
+			}
 			await patchUsage(label, {
 				...snapshot,
 				at: Date.now(),

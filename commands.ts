@@ -723,12 +723,20 @@ export async function shiftPriority(label: string, step: number): Promise<void> 
 	invalidateSnapshot();
 }
 
-async function toggleFlag(label: string, flag: "favorite" | "weekend"): Promise<void> {
+export async function toggleFlag(label: string, flag: "favorite" | "weekend"): Promise<void> {
 	await mutateStore((store) => {
 		const account = store.accounts.find((a) => a.label === label);
 		if (!account) return;
-		if (account[flag]) delete account[flag];
-		else account[flag] = true;
+		if (account[flag]) {
+			delete account[flag];
+			if (flag === "favorite") delete account.favoriteUntil;
+		} else {
+			account[flag] = true;
+			if (flag === "favorite") {
+				const at = Date.parse(readUsage()[label]?.seven_day?.resets_at ?? "");
+				account.favoriteUntil = Number.isFinite(at) && at > Date.now() ? at : null;
+			}
+		}
 	});
 	invalidateSnapshot();
 }

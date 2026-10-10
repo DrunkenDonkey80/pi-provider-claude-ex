@@ -33,6 +33,7 @@ import {
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import type { UsageCache } from "./usage.ts";
 
 export interface Account {
 	label: string;
@@ -53,8 +54,10 @@ export interface Account {
 	 * else is; ± shift the rank (see PRIORITY_WEIGHT in format.ts).
 	 */
 	priority?: number;
-	/** Toggled with enter in /claude-pool: above ++, always used while usable. */
+	/** Toggled with enter in /claude-pool: above ++ until the weekly reset. */
 	favorite?: boolean;
+	/** Weekly reset epoch ms; null waits for usage, absent migrates old favorites. */
+	favoriteUntil?: number | null;
 	/** Toggled with w: office-hours reserve, drained in free time (format.ts weekendState). */
 	weekend?: boolean;
 	/** Rate/usage capped until this epoch ms. */
@@ -270,12 +273,24 @@ export function stashDrop(label: string, refresh: string): void {
 	writeJsonAtomic(STASH_PATH, stash);
 }
 
-/** Read the store, adopting any stashed successor the main write missed. */
+/** Read the store, expiring favorites and adopting any missed stashed successor. */
 export function readStore(): Store {
 	const store = readJson<Store>(POOL_PATH, { accounts: [] });
 	if (!Array.isArray(store.accounts)) store.accounts = [];
 	const stash = readJson<Stash>(STASH_PATH, {});
+	const now = Date.now();
+	const usage = store.accounts.some((a) => a.favorite && a.favoriteUntil === undefined)
+		? readJson<UsageCache>(USAGE_PATH, {}) : {};
 	for (const acct of store.accounts) {
+		if (acct.favorite && acct.favoriteUntil === undefined) {
+			const at = Date.parse(usage[acct.label]?.seven_day?.resets_at ?? "");
+			if (Number.isFinite(at)) acct.favoriteUntil = at;
+		}
+		if (acct.favorite && (acct.favoriteUntil ?? Infinity) <= now) {
+			delete acct.favorite;
+			delete acct.favoriteUntil;
+			if (store.active === acct.label && !store.manualPin) delete store.active;
+		}
 		const s = stash[acct.label];
 		if (!s || s.refresh === acct.refresh) continue;
 		acct.refresh = s.refresh;
