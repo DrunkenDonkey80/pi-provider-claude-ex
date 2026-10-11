@@ -528,6 +528,56 @@ await check(
 	},
 );
 
+// Label-less /claude-pool-add: one email match updates it; two (Pro + Team on one
+// email) asks which. Sync is off here, so nothing is published.
+await check("label-less add matches by email and asks when one email has two accounts", async () => {
+	const commands = await import("./commands.ts");
+	const fetch = globalThis.fetch;
+	const handlers = new Map<string, (args: string, ctx: unknown) => Promise<void>>();
+	commands.setupCommands({
+		registerCommand: (name: string, def: { handler: (a: string, c: unknown) => Promise<void> }) => handlers.set(name, def.handler),
+		registerShortcut: () => {},
+	} as never);
+	const add = handlers.get("claude-pool-add")!;
+	const notes: string[] = [];
+	const asked: string[][] = [];
+	const ctx = (answer?: string) => ({ ui: {
+		notify: (m: string) => notes.push(m),
+		select: async (_t: string, options: string[]) => { asked.push(options); return answer && options.find((o) => o.startsWith(answer)); },
+	} });
+	const login = (refresh: string, hoursLeft = 8) =>
+		store.writeJsonAtomic(join(dir, "auth.json"), { anthropic: { refresh, access: `at-${refresh}`, expires: Date.now() + hoursLeft * 3_600_000 } });
+	globalThis.fetch = async () => new Response(JSON.stringify({ account: { uuid: "u", email: "flex@x.bg" }, organization: { uuid: "o", organization_type: "claude_team" } }));
+	try {
+		seed([acct("solo", { email: "flex@x.bg" }), acct("other", { email: "z@x.bg" })]);
+		login("rt-new-1");
+		await add("", ctx());
+		assert.equal(store.readStore().accounts.find((a) => a.label === "solo")?.refresh, "rt-new-1", "the single email match is updated");
+		assert.equal(asked.length, 0, "no question when the email is unambiguous");
+
+		seed([acct("home", { email: "flex@x.bg", plan: "pro" }), acct("datecs", { email: "flex@x.bg", plan: "team" })]);
+		login("rt-new-2");
+		await add("", ctx("datecs"));
+		assert.deepEqual(asked.at(-1), ["home [pro]", "datecs [team]"]);
+		const after = store.readStore().accounts;
+		assert.equal(after.find((a) => a.label === "datecs")?.refresh, "rt-new-2", "the chosen account is updated");
+		assert.notEqual(after.find((a) => a.label === "home")?.refresh, "rt-new-2", "the other one is untouched");
+
+		login("rt-new-3");
+		await add("", ctx());
+		assert.match(notes.at(-1) ?? "", /Cancelled/);
+		assert.ok(!store.readStore().accounts.some((a) => a.refresh === "rt-new-3"), "cancel changes nothing");
+
+		seed([acct("solo", { email: "flex@x.bg" })]);
+		login("rt-stale", 3);
+		await add("", ctx());
+		assert.notEqual(store.readStore().accounts[0].refresh, "rt-stale", "an old auth.json is never forced in by email");
+	} finally {
+		globalThis.fetch = fetch;
+		rmSync(join(dir, "auth.json"), { force: true });
+	}
+});
+
 await check("a fresh login clears the replaced deadline without clearing user preferences", async () => {
 	const commands = await import("./commands.ts");
 	const fetch = globalThis.fetch;
@@ -559,6 +609,11 @@ await check("a fresh login clears the replaced deadline without clearing user pr
 		await store.mutateStore((s) => { s.accounts[0].refreshExpires = knownDeadline; });
 		await commands.upsertAccount("relogin", creds);
 		assert.equal(store.readStore().accounts[0].refreshExpires, knownDeadline, "re-adding the same credential keeps its known deadline");
+		const stamped = store.readStore().accounts[0].loginAt;
+		assert.ok(stamped, "a new login is stamped");
+		await store.mutateStore((s) => { s.accounts[0].loginAt = 1; });
+		await commands.upsertAccount("relogin", creds);
+		assert.equal(store.readStore().accounts[0].loginAt, 1, "re-adding the same credential is not a new login");
 	} finally {
 		globalThis.fetch = fetch;
 		rmSync(join(dir, "auth.json"), { force: true });
@@ -1112,6 +1167,11 @@ await check("limit resets parse defensively and render by expiry", async () => {
 	assert.ok(!ok.includes("\u001b[31mresets"), "10 days out is not red");
 	assert.ok(line({ eligible: true, grants: [g({ ends_at: iso(2 * 86_400_000) })] }).includes("\u001b[31mresets 1"));
 	assert.match(format.accountLine(acct("x", { dead: true }), 0, undefined, false), /\[DEAD\]/);
+	const ends = (ms: number) => plain(format.accountLine(acct("x", { refreshExpires: Date.now() + ms }), 0, undefined, false));
+	assert.match(ends(3 * 3_600_000), /\[OK\].*login ends in 3h/);
+	assert.match(ends(2 * 86_400_000), /login ends in 2d 0h/);
+	assert.ok(!ends(4 * 86_400_000).includes("login ends"), "no warning 4 days out");
+	assert.ok(!ends(-1000).includes("login ends"), "past deadline is [ERROR], not a countdown");
 });
 
 // Columns must line up down the list whatever the clock and percent widths
@@ -1400,6 +1460,17 @@ await check("sync never publishes a dead lineage", async () => {
 		["dead", "behind"],
 		"dead takes anything published; live takes only a later rotation",
 	);
+
+	// PC1 re-logs in (loginAt now, 8h token); PC2 just refreshed the OLD login,
+	// so its access expiry is later. The new login must still win both ways.
+	const fresh = { ...acct("x"), expires: 5_000, loginAt: 2_000 };
+	const oldRefreshed = { ...theirs("x", 9_000), loginAt: 1_000 };
+	const pc1 = pool.syncPlan([fresh] as never, new Map([["x", oldRefreshed]]));
+	assert.deepEqual([pc1.adopt.length, pc1.publish.length], [0, 1], "PC1 keeps and publishes its new login");
+	const pc2 = pool.syncPlan([{ ...acct("x"), ...oldRefreshed }] as never, new Map([["x", { ...theirs("x", 5_000), loginAt: 2_000 }]]));
+	assert.deepEqual([pc2.adopt.length, pc2.publish.length], [1, 0], "PC2 adopts the new login over its later-expiring old one");
+	const legacy = pool.syncPlan([{ ...acct("x"), expires: 5_000 }] as never, new Map([["x", theirs("x", 9_000)]]));
+	assert.equal(legacy.adopt.length, 1, "without loginAt, later expiry still decides");
 });
 
 // 12. Credentials leave this machine when sync is on, so the blob must be

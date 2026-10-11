@@ -47,6 +47,17 @@ import { recordAuthEvent } from "./auth-log.ts";
 
 export const SYNC_DIR = join(AGENT_DIR, "claude-pool-sync");
 
+/**
+ * Order two copies of one account (> 0: `a` is fresher). A newer /login beats
+ * any rotation of an older one, even when the old login was refreshed later and
+ * so carries the later 8h access expiry; within one login, later expiry wins.
+ * Copies from before `loginAt` existed count as oldest.
+ */
+export const fresher = (
+	a: { expires: number; loginAt?: number },
+	b: { expires: number; loginAt?: number },
+): number => (a.loginAt ?? 0) - (b.loginAt ?? 0) || a.expires - b.expires;
+
 /** One account's credential as it travels between machines. */
 export interface SyncedCred {
 	label: string;
@@ -54,6 +65,7 @@ export interface SyncedCred {
 	access: string;
 	expires: number;
 	refreshExpires?: number;
+	loginAt?: number;
 	/** When the machine that rotated it wrote this, epoch ms. */
 	at: number;
 	/** Which machine rotated it — for the status line only. */
@@ -199,10 +211,9 @@ export async function pushCred(
 				ensureRepo(config);
 				const file = join(SYNC_DIR, credPath(cred.label, config.key));
 				for (let attempt = 0; attempt < 3; attempt++) {
-					// `expires` is the version: a later access expiry is a later
-					// rotation, so anything newer than ours wins and we adopt it.
+					// Anything fresher than ours (newer login, or later rotation) wins and we adopt it.
 					const remote = readLocalCopy(cred.label, config);
-					if (remote && remote.expires > cred.expires) return remote;
+					if (remote && fresher(remote, cred) > 0) return remote;
 
 					mkdirSync(join(SYNC_DIR, "accounts"), { recursive: true });
 					writeFileSync(file, `${seal(cred, config.key)}\n`, { mode: 0o600 });
@@ -280,7 +291,7 @@ export async function pushAll(
 					let written = 0;
 					for (const cred of creds) {
 						const remote = readLocalCopy(cred.label, config);
-						if (remote && remote.expires >= cred.expires) continue;
+						if (remote && fresher(remote, cred) >= 0) continue;
 						writeFileSync(
 							join(SYNC_DIR, credPath(cred.label, config.key)),
 							`${seal(cred, config.key)}\n`,
@@ -320,12 +331,14 @@ export const credOf = (account: {
 	access: string;
 	expires: number;
 	refreshExpires?: number;
+	loginAt?: number;
 }): SyncedCred => ({
 	label: account.label,
 	refresh: account.refresh,
 	access: account.access,
 	expires: account.expires,
 	refreshExpires: account.refreshExpires,
+	loginAt: account.loginAt,
 	at: Date.now(),
 	by: hostname(),
 });

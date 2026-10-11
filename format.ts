@@ -174,6 +174,10 @@ export function accountLine(
 			`spend ${entry.spend.used.toFixed(2)}/${entry.spend.limit.toFixed(2)} ${entry.spend.currency}`,
 		);
 	if (state !== "ok" && !account.dead) parts.push(state); // DEAD says it already
+	// Anthropic logins have a fixed end that refreshing does not extend: warn 3 days ahead (re-login by Friday).
+	const loginLeft = (account.refreshExpires ?? Number.POSITIVE_INFINITY) - Date.now();
+	if (!account.dead && loginLeft > 0 && loginLeft < 3 * DAY)
+		parts.push(yellow(`login ends in ${relative(loginLeft)}`));
 	parts.push(
 		paint(`${account.label}${id ? ` ${id}` : ""}`),
 	);

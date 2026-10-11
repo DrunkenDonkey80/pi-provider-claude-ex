@@ -22,7 +22,7 @@ import {
 	setActive,
 	syncNow,
 } from "./pool.ts";
-import { checkRepo, newKey, syncOn, syncReady } from "./sync.ts";
+import { checkRepo, credOf, newKey, pullCred, pushCred, syncOn, syncReady } from "./sync.ts";
 import {
 	accountLine,
 	relative,
@@ -48,6 +48,7 @@ interface Ui {
 	notify: (m: string, level?: string) => void;
 	confirm?: (title: string, body?: string) => Promise<boolean>;
 	input?: (prompt: string, initial?: string) => Promise<string | undefined>;
+	select?: (title: string, options: string[]) => Promise<string | undefined>;
 	custom?: <T>(
 		build: (
 			tui: { requestRender: () => void },
@@ -177,6 +178,38 @@ export async function attachCurrentLogin(labelHint?: string): Promise<
 		email: profile.email,
 		plan: profile.plan,
 	};
+}
+
+/**
+ * Which pool account a label-less /claude-pool-add updates: the one with the
+ * login's email; when one email holds several subscriptions only the user knows
+ * which org they picked, so ask. undefined = no match (identity decides, or a
+ * new entry); null = the user cancelled.
+ */
+async function labelByEmail(ctx: Ctx): Promise<string | undefined | null> {
+	const creds = readAnthropicAuth();
+	const accounts = readStore().accounts;
+	if (!creds || accounts.some((a) => a.refresh === creds.refresh)) return undefined;
+	// Only a fresh /login (8h token, under ~2h old) may overwrite by email: an old
+	// auth.json is usually a spent generation, and forcing it in kills the account.
+	if (creds.expires < Date.now() + 6 * 3_600_000) return undefined;
+	const email = await fetchProfile(creds.access).then((p) => p.email, () => undefined);
+	const same = email ? accounts.filter((a) => a.email === email || a.label === email) : [];
+	if (same.length < 2) return same[0]?.label;
+	const options = same.map((a) => `${a.label}${a.plan ? ` [${a.plan}]` : ""}`);
+	const pick = await ctx.ui.select?.(`Which ${email} account did you just log in to?`, options);
+	return pick ? same[options.indexOf(pick)]?.label ?? null : null;
+}
+
+/** Publish a just-added login at once, so no other machine can outlive it. */
+async function publishNow(label: string): Promise<string> {
+	const { sync, accounts } = readStore();
+	const account = accounts.find((a) => a.label === label);
+	if (!account || !syncOn(sync)) return "";
+	await pushCred(credOf(account), sync);
+	return (await pullCred(label, sync))?.refresh === account.refresh
+		? " Published to sync."
+		: " Not published yet \u2014 the hourly sync will retry.";
 }
 
 /**
@@ -399,7 +432,12 @@ export function setupCommands(pi: ExtensionAPI): void {
 				);
 				return;
 			}
-			const attached = await attachCurrentLogin(args.trim() || undefined);
+			const label = args.trim() || (await labelByEmail(ctx));
+			if (label === null) {
+				ctx.ui.notify("Cancelled — nothing changed.", "info");
+				return;
+			}
+			const attached = await attachCurrentLogin(label);
 			if (!attached) {
 				ctx.ui.notify("This login is already attached to a pool account.", "info");
 				return;
@@ -408,7 +446,7 @@ export function setupCommands(pi: ExtensionAPI): void {
 			ctx.ui.notify(
 				`${attached.matched === "new" ? "Added" : "Re-attached"} "${attached.label}"${
 					attached.plan ? ` [${attached.plan}]` : ""
-				} — ${count} account${count === 1 ? "" : "s"} in the pool.`,
+				} — ${count} account${count === 1 ? "" : "s"} in the pool.${await publishNow(attached.label)}`,
 				"info",
 			);
 		},
@@ -791,6 +829,7 @@ export async function upsertAccount(
 			label,
 			...creds,
 			lastGrantAt: Date.now(),
+			loginAt: Date.now(),
 			dead: false,
 			strikes: 0,
 			cooldownUntil: 0,
@@ -802,6 +841,9 @@ export async function upsertAccount(
 				// A new login cannot inherit the replaced login's deadline.
 				refreshExpires: store.accounts[index].refresh === creds.refresh
 					? store.accounts[index].refreshExpires : undefined,
+				// Re-adding the same credential is not a new login: it must not outrank sync.
+				loginAt: store.accounts[index].refresh === creds.refresh
+					? store.accounts[index].loginAt : entry.loginAt,
 			};
 		else store.accounts.push(entry);
 		if (!store.active) store.active = label;

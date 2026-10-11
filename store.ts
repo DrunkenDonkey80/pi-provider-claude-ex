@@ -43,6 +43,8 @@ export interface Account {
 	expires: number;
 	/** Login (refresh-token) expiry, epoch ms — the date that actually matters. */
 	refreshExpires?: number;
+	/** When this login was added, epoch ms: a newer login outranks any rotation of an older one in sync. */
+	loginAt?: number;
 	/** Last successful grant, epoch ms. Drives keep-alive scheduling. */
 	lastGrantAt?: number;
 	/** Held out of rotation by the user. Still a valid explicit switch target. */

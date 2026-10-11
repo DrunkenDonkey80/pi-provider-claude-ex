@@ -46,6 +46,7 @@ import { runWarm } from "./warm.ts";
 import {
 	type SyncedCred,
 	credOf,
+	fresher,
 	pullAll,
 	pullCred,
 	pushAll,
@@ -251,9 +252,9 @@ async function adoptRemote(
 		return undefined;
 	}
 	if (mode === "newer") {
-		if (remote.expires <= current.expires || remote.expires <= Date.now() + ACCESS_BUFFER_MS) {
+		if (fresher(remote, current) <= 0 || remote.expires <= Date.now() + ACCESS_BUFFER_MS) {
 			await recordAuthEvent("sync_check", current, {
-				result: remote.expires <= current.expires ? "not_newer" : "expiring", by: remote.by,
+				result: fresher(remote, current) <= 0 ? "not_newer" : "expiring", by: remote.by,
 			});
 			return undefined;
 		}
@@ -265,6 +266,7 @@ async function adoptRemote(
 		account.access = remote.access;
 		account.expires = remote.expires;
 		account.refreshExpires = remote.refreshExpires;
+		account.loginAt = remote.loginAt;
 		account.lastGrantAt = remote.at;
 		account.strikes = 0;
 		account.dead = false; // a newer generation proves the lineage is alive
@@ -408,9 +410,9 @@ export function syncPlan(
 		const theirs = remote.get(account.label);
 		// Dead: our refresh is spent, so anything published beats it — and ours
 		// must never be published at any expiry.
-		if (theirs && (account.dead || theirs.expires > account.expires))
+		if (theirs && (account.dead || fresher(theirs, account) > 0))
 			adopt.push(account);
-		else if (!account.dead && (!theirs || theirs.expires < account.expires))
+		else if (!account.dead && (!theirs || fresher(theirs, account) < 0))
 			publish.push(account);
 	}
 	return { adopt, publish };
