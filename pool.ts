@@ -13,6 +13,10 @@
  *     so N pi sessions + the daemon can never POST the same generation.
  *   - A transient failure quarantines briefly; only a server-side
  *     `invalid_grant` marks an account dead.
+ *   - With sync on, ONE machine (role "manager") renews, MANAGER_BUFFER_MS early,
+ *     and publishes; every other machine is a consumer that adopts from the repo
+ *     and renews only inside CONSUMER_BUFFER_MS (the manager must be down).
+ *     Two machines renewing one lineage is what kept killing accounts.
  */
 
 import {
@@ -58,6 +62,16 @@ import { join } from "node:path";
 
 /** Refresh the access token this long before it expires. */
 const ACCESS_BUFFER_MS = 10 * 60_000;
+/** The manager renews this early, so consumers find its token in the repo. */
+const MANAGER_BUFFER_MS = 4 * 3_600_000;
+/** A consumer renews only this close to expiry: the manager is presumed down. */
+const CONSUMER_BUFFER_MS = 60 * 60_000;
+
+/** How close to expiry this machine renews: role only matters with sync on. */
+export function refreshBuffer(store: Store): number {
+	if (!syncOn(store.sync)) return ACCESS_BUFFER_MS;
+	return store.role === "manager" ? MANAGER_BUFFER_MS : CONSUMER_BUFFER_MS;
+}
 /** Exercise an idle lineage after this long, so the login never lapses. */
 export const KEEPALIVE_MS = 20 * 24 * 3_600_000;
 /** Cooldown applied when a cap is hit without a server-stated reset. */
@@ -296,10 +310,12 @@ export async function ensureFresh(
 	label: string,
 	opts: { force?: boolean; cause?: RefreshCause } = {},
 ): Promise<Account | undefined> {
-	const before = findAccount(readStore(), label);
+	const store = readStore();
+	const buffer = refreshBuffer(store);
+	const before = findAccount(store, label);
 	if (!before) return before;
 	if (before.dead && !opts.force) return before;
-	if (!opts.force && before.expires > Date.now() + ACCESS_BUFFER_MS)
+	if (!opts.force && before.expires > Date.now() + buffer)
 		return before;
 
 	let stage: "lock" | "sync" | "grant" | "persist" | "publish" = "lock";
@@ -315,7 +331,7 @@ export async function ensureFresh(
 					await recordAuthEvent("local_adopt", current, { fromGeneration: fingerprint(before.refresh) });
 					return current;
 				}
-				if (!opts.force && current.expires > Date.now() + ACCESS_BUFFER_MS)
+				if (!opts.force && current.expires > Date.now() + buffer)
 					return current;
 
 				// Another machine may already have rotated this lineage. Taking its
@@ -610,9 +626,10 @@ export async function tick(opts: { usage?: boolean } = {}): Promise<void> {
 	for (const account of store.accounts) {
 		if (account.dead) continue;
 		const idle = now - (account.lastGrantAt ?? account.expires - 8 * 3_600_000);
-		const nearExpiry = account.expires <= now + ACCESS_BUFFER_MS;
+		const nearExpiry = account.expires <= now + refreshBuffer(store);
 		if (nearExpiry) await ensureFresh(account.label);
-		else if (idle > KEEPALIVE_MS) {
+		// Keep-alive is a grant too: only the manager spends it when synced.
+		else if (idle > KEEPALIVE_MS && (!syncOn(store.sync) || store.role === "manager")) {
 			log(
 				`keep-alive grant for ${account.label} (idle ${Math.round(idle / 86_400_000)}d)`,
 			);

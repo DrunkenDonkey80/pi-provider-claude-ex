@@ -93,6 +93,12 @@ export interface Store {
 	enabled?: boolean;
 	/** Push/pull credentials through a git repo shared with other machines. */
 	sync?: SyncConfig;
+	/**
+	 * This machine's sync role. "manager" renews tokens and publishes them;
+	 * absent = consumer, which adopts from the repo and renews only when the
+	 * manager seems down. Local to this machine, never synced.
+	 */
+	role?: "manager";
 	/** Label of the pinned active account (sticky across restarts). */
 	active?: string;
 	/** Re-pick the best account in the background. Default ON (undefined = on). */

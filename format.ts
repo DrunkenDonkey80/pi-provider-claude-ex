@@ -415,7 +415,11 @@ export function sortAccountsForDisplay(
 			pct5: pct5 ?? Number.POSITIVE_INFINITY,
 			pct7: pct7 ?? Number.POSITIVE_INFINITY,
 			reset5: resetAt(usage?.five_hour?.resets_at),
-			reset7: resetAt(usage?.seven_day?.resets_at),
+			// Quota dies at whichever comes first: the weekly reset or the login end.
+			reset7: Math.min(
+				resetAt(usage?.seven_day?.resets_at),
+				account.refreshExpires ?? Number.POSITIVE_INFINITY,
+			),
 		};
 	});
 	return ranked

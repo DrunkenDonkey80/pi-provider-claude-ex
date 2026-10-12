@@ -345,7 +345,14 @@ export function setupCommands(pi: ExtensionAPI): void {
 						list.onCancel = () => done(null);
 						const box = new Container();
 						box.addChild(
-							new Text(theme.fg("accent", theme.bold("Claude accounts")), 1, 0),
+							new Text(
+								theme.fg(
+									"accent",
+									theme.bold(`Claude accounts${syncOn(fresh.sync) ? ` (${fresh.role ?? "consumer"})` : ""}`),
+								),
+								1,
+								0,
+							),
 						);
 						box.addChild(list);
 						box.addChild(
@@ -432,6 +439,8 @@ export function setupCommands(pi: ExtensionAPI): void {
 				);
 				return;
 			}
+			// Profile lookup + sync publish take ~10s; say so before going quiet.
+			ctx.ui.notify("Adding the current login to the pool \u2014 please wait\u2026", "info");
 			const label = args.trim() || (await labelByEmail(ctx));
 			if (label === null) {
 				ctx.ui.notify("Cancelled — nothing changed.", "info");
@@ -570,6 +579,30 @@ export function setupCommands(pi: ExtensionAPI): void {
 				on
 					? "Automatic selection ON — the best account is re-picked every 20m."
 					: "Automatic selection OFF — the pool only switches when an account runs out.",
+				"info",
+			);
+		},
+	});
+
+	register("claude-pool-role", {
+		description:
+			"Show or set this machine's sync role: manager (renews and publishes) or consumer (default, adopts from the repo)",
+		handler: async (args, ctx) => {
+			const want = args.trim().toLowerCase();
+			if (want && want !== "manager" && want !== "consumer") {
+				ctx.ui.notify("Usage: /claude-pool-role [manager|consumer]", "warning");
+				return;
+			}
+			const role = await mutateStore((store) => {
+				if (want === "manager") store.role = "manager";
+				else if (want === "consumer") delete store.role;
+				return store.role ?? "consumer";
+			});
+			invalidateSnapshot();
+			ctx.ui.notify(
+				role === "manager"
+					? "This machine is the MANAGER: it renews every account 4h before expiry and publishes. Keep exactly one."
+					: "This machine is a CONSUMER: it takes tokens from sync and renews only within 1h of expiry (manager down).",
 				"info",
 			);
 		},

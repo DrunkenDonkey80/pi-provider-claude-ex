@@ -1022,6 +1022,35 @@ await check("priority: ++ first, -- last, +/- bend the rank", () => {
 	);
 });
 
+// One renewer: with sync on, the manager renews 4h early and consumers only
+// within 1h (manager down), so two machines never race one lineage.
+await check("sync role sets how close to expiry this machine renews", async () => {
+	const pool = await import("./pool.ts");
+	const sync = { url: "git@github.com:me/pool.git", key: "ab".repeat(32) };
+	assert.equal(pool.refreshBuffer({ accounts: [] }), 10 * 60_000, "no sync: lazy as before");
+	assert.equal(pool.refreshBuffer({ accounts: [], sync }), 3_600_000, "consumer by default");
+	assert.equal(pool.refreshBuffer({ accounts: [], sync, role: "manager" }), 4 * 3_600_000);
+});
+
+// A login that ends before the weekly reset kills the quota first: rank by it.
+await check("ranking uses the login end when it comes before the 7d reset", async () => {
+	const format = await import("./format.ts");
+	const now = Date.UTC(2026, 9, 7, 10); // Wednesday 13:00 local-ish; daytime either way
+	const at = (ms: number) => new Date(now + ms).toISOString();
+	const accounts = [
+		acct("later", {}),
+		acct("login", { refreshExpires: now + 2 * 3_600_000 }),
+	] as never;
+	const cache = {
+		later: { five_hour: { pct: 0 }, seven_day: { pct: 50, resets_at: at(20 * 3_600_000) } },
+		login: { five_hour: { pct: 0 }, seven_day: { pct: 50, resets_at: at(3 * 86_400_000) } },
+	} as never;
+	assert.deepEqual(
+		format.sortAccountsForDisplay(accounts, cache, now).map((a) => a.label),
+		["login", "later"],
+	);
+});
+
 // A host that relaunches every saved session at once starts N sweeps in the
 // same instant. They all read the same cache snapshot and all see the label as
 // due, so without claiming the slot under the lock every one of them spends a
