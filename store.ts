@@ -95,10 +95,10 @@ export interface Store {
 	sync?: SyncConfig;
 	/**
 	 * This machine's sync role. "manager" renews tokens and publishes them;
-	 * absent = consumer, which adopts from the repo and renews only when the
-	 * manager seems down. Local to this machine, never synced.
+	 * "consumer" adopts from the repo and renews only when the manager seems
+	 * down. Absent = not asked yet, behaves as a consumer. Local, never synced.
 	 */
-	role?: "manager";
+	role?: "manager" | "consumer";
 	/** Label of the pinned active account (sticky across restarts). */
 	active?: string;
 	/** Re-pick the best account in the background. Default ON (undefined = on). */

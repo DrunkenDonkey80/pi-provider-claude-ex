@@ -18,7 +18,7 @@ import { appendFileSync } from "node:fs";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { loginAnthropicOAuth } from "./oauth.ts";
 import { isPlainObject, transformPayload, unaliasToolCalls } from "./tools.ts";
-import { attachCurrentLogin, setupCommands } from "./commands.ts";
+import { askRoleOnce, attachCurrentLogin, setupCommands } from "./commands.ts";
 import {
 	AUTH_RE,
 	LIMIT_RE,
@@ -108,6 +108,10 @@ function setupPool(pi: ExtensionAPI): void {
 		if (label) await ensureFresh(label);
 	};
 	pi.on("session_start", prepare);
+	// Not awaited: the question must not hold up the session.
+	pi.on("session_start", (_event, ctx) => {
+		if (ctx.hasUI) void askRoleOnce(ctx as never).catch(() => undefined);
+	});
 	pi.on("before_agent_start", prepare);
 
 	// Full sweep (keep-alive grants + usage cache) only when no `cpool daemon`

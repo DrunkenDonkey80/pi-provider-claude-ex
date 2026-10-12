@@ -594,8 +594,7 @@ export function setupCommands(pi: ExtensionAPI): void {
 				return;
 			}
 			const role = await mutateStore((store) => {
-				if (want === "manager") store.role = "manager";
-				else if (want === "consumer") delete store.role;
+				if (want === "manager" || want === "consumer") store.role = want;
 				return store.role ?? "consumer";
 			});
 			invalidateSnapshot();
@@ -771,6 +770,32 @@ export async function applySync(arg: string): Promise<string> {
 	} catch (e) {
 		return `Saved, but cloning failed: ${(e as Error).message.split("\n")[0]}`;
 	}
+}
+
+const ROLE_MANAGER = "Manager — this machine renews the tokens and publishes them (pick on ONE machine, the one on most)";
+const ROLE_CONSUMER = "Consumer — take tokens from sync; renew only if the manager is down";
+let roleAsked = false;
+
+/**
+ * Synced machines must agree on one renewer, so a synced machine with no role
+ * yet asks once per process. Esc or no UI leaves it unset: behaves as a
+ * consumer and is asked again next session.
+ */
+export async function askRoleOnce(ctx: Ctx): Promise<void> {
+	const store = readStore();
+	if (roleAsked || store.role || !syncOn(store.sync) || !ctx.ui.select) return;
+	roleAsked = true;
+	const pick = await ctx.ui.select(
+		"Claude pool sync: which role should this machine have? Exactly one synced machine should be the manager.",
+		[ROLE_MANAGER, ROLE_CONSUMER],
+	);
+	if (!pick) return;
+	const role = pick === ROLE_MANAGER ? "manager" : "consumer";
+	await mutateStore((s) => {
+		s.role = role;
+	});
+	invalidateSnapshot();
+	ctx.ui.notify(`This machine is now the ${role}. Change it with /claude-pool-role.`, "info");
 }
 
 /** Drop an account from the pool (shared by /claude-pool-remove and the menu). */
