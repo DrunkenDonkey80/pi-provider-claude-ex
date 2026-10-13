@@ -80,6 +80,12 @@ const DEFAULT_COOLDOWN_MS = 5 * 60_000;
 export const TICK_MS = 5 * 60_000;
 /** How often a sweep reconciles with the shared repo. */
 const SYNC_SWEEP_MS = 60 * 60_000;
+/**
+ * A consumer pulls this often: a renewal kills the previous access token at
+ * once (verified: 401 hours before its expiry), so a consumer must pick up the
+ * manager's new generation within minutes, not when its own copy "expires".
+ */
+const CONSUMER_SYNC_MS = 5 * 60_000;
 /** Only the in-use account polls in the background; the rest refresh on demand. */
 export const ACTIVE_USAGE_MS = 5 * 60_000;
 /** How often the background sweep re-reads everything and re-picks the best. */
@@ -644,7 +650,8 @@ export async function tick(opts: { usage?: boolean } = {}): Promise<void> {
 	if (
 		syncOn(store.sync) &&
 		(await mutateStore((s) => {
-			if (now - (s.lastSyncAt ?? 0) < SYNC_SWEEP_MS) return false;
+			const every = s.role === "manager" ? SYNC_SWEEP_MS : CONSUMER_SYNC_MS;
+			if (now - (s.lastSyncAt ?? 0) < every) return false;
 			s.lastSyncAt = now;
 			return true;
 		}))
