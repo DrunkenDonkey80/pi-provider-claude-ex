@@ -187,6 +187,15 @@ export function fullUntil(
 }
 
 /**
+ * A new token voids the last failure: a 401 from the previous generation must
+ * not keep showing ERROR (or back off for an hour) once a live token arrived.
+ */
+export async function clearUsageError(label: string): Promise<void> {
+	if (readUsage()[label]?.error)
+		await patchUsage(label, { error: undefined, intervalMs: MIN_INTERVAL_MS, nextPollAt: 0 });
+}
+
+/**
  * Fetch usage for the accounts that are due, oldest-first, at most `max` per
  * call. `getToken` supplies a valid access token (and is where token refresh
  * happens — this module never touches credentials).

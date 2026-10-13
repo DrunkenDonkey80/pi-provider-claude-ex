@@ -41,6 +41,7 @@ import { type RefreshCause, recordAuthEvent } from "./auth-log.ts";
 import { WEEKEND_HELD, accountTier, sortAccountsForDisplay } from "./format.ts";
 import {
 	SERVE_TTL_MS,
+	clearUsageError,
 	collectUsage,
 	fullUntil,
 	readUsage,
@@ -294,6 +295,7 @@ async function adoptRemote(
 		return account;
 	});
 	invalidateSnapshot();
+	if (saved) await clearUsageError(label);
 	if (saved) await recordAuthEvent("sync_adopt", saved, {
 		fromGeneration: fingerprint(current.refresh), by: remote.by,
 	});
@@ -390,6 +392,7 @@ export async function ensureFresh(
 				});
 				stashDrop(label, next.refresh);
 				invalidateSnapshot();
+				if (saved) await clearUsageError(label);
 				if (saved) await recordAuthEvent("refresh_ok", saved, {
 					status: outcome.status, fromGeneration: fingerprint(current.refresh),
 				});

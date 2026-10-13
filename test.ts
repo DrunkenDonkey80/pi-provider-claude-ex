@@ -1044,6 +1044,15 @@ await check("a synced machine with no role is warned once per session", async ()
 	assert.match(warned[0], /^warning:.*no role/);
 });
 
+await check("a new token clears the old token's usage 401", async () => {
+	const usage = await import("./usage.ts");
+	store.writeJsonAtomic(store.USAGE_PATH, { x: { error: "http-401", intervalMs: 3_600_000, nextPollAt: Date.now() + 3_600_000 } });
+	await usage.clearUsageError("x");
+	const entry = usage.readUsage().x;
+	assert.equal(entry.error, undefined);
+	assert.equal(entry.nextPollAt, 0, "re-checked on the next poll, not after the backoff");
+});
+
 // A login that ends before the weekly reset kills the quota first: rank by it.
 await check("ranking uses the login end when it comes before the 7d reset", async () => {
 	const format = await import("./format.ts");
