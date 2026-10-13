@@ -174,11 +174,19 @@ function setupPool(pi: ExtensionAPI): void {
 			// in place (the consume gate still declines to POST a spent grant).
 			if (AUTH_RE.test(msg.errorMessage) && !LIMIT_RE.test(msg.errorMessage)) {
 				const account = await ensureFresh(previous, { force: true, cause: "auth_error" });
+				if (account && !account.dead) {
+					// Reworded so pi's own retry resends it (bounded by its retry budget).
+					ctx.ui.notify(`Claude account "${previous}" had a stale token — refreshed, retrying.`, "info");
+					return {
+						message: {
+							...event.message,
+							errorMessage: `Claude account "${previous}" had a revoked token and now has a fresh one — please retry your request.`,
+						},
+					};
+				}
 				ctx.ui.notify(
-					account && !account.dead
-						? `Claude account "${previous}" had a stale token — refreshed. Resend to continue.`
-						: `Claude account "${previous}" login is dead — run /login anthropic then /claude-pool-add ${previous}.`,
-					account && !account.dead ? "info" : "warning",
+					`Claude account "${previous}" login is dead — run /login anthropic then /claude-pool-add ${previous}.`,
+					"warning",
 				);
 				return undefined;
 			}

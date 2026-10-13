@@ -70,10 +70,23 @@ const MANAGER_BUFFER_MS = 4 * 3_600_000;
 const CONSUMER_BUFFER_MS = 60 * 60_000;
 
 /** How close to expiry this machine renews: role only matters with sync on. */
-export function refreshBuffer(store: Store): number {
+export function grantBuffer(store: Store): number {
 	if (!syncOn(store.sync)) return ACCESS_BUFFER_MS;
 	return store.role === "manager" ? MANAGER_BUFFER_MS : CONSUMER_BUFFER_MS;
 }
+
+/**
+ * How close to expiry this machine starts looking for a successor. The
+ * manager's renewal revokes our copy from the 4h mark, so a consumer looks in
+ * the repo from then on, long before it would renew itself.
+ */
+export function refreshBuffer(store: Store): number {
+	return syncOn(store.sync) ? MANAGER_BUFFER_MS : ACCESS_BUFFER_MS;
+}
+
+/** A consumer's repo look per account, at most this often per process. */
+const LOOK_EVERY_MS = 2 * 60_000;
+const lastLook = new Map<string, number>();
 /** Exercise an idle lineage after this long, so the login never lapses. */
 export const KEEPALIVE_MS = 20 * 24 * 3_600_000;
 /** Cooldown applied when a cap is hit without a server-stated reset. */
@@ -321,11 +334,18 @@ export async function ensureFresh(
 ): Promise<Account | undefined> {
 	const store = readStore();
 	const buffer = refreshBuffer(store);
+	const grantAt = grantBuffer(store);
 	const before = findAccount(store, label);
 	if (!before) return before;
 	if (before.dead && !opts.force) return before;
 	if (!opts.force && before.expires > Date.now() + buffer)
 		return before;
+	// Consumer between the manager's renewal mark and its own: only look in the
+	// repo, and not on every turn (each look is a git fetch).
+	if (!opts.force && before.expires > Date.now() + grantAt) {
+		if (Date.now() - (lastLook.get(label) ?? 0) < LOOK_EVERY_MS) return before;
+		lastLook.set(label, Date.now());
+	}
 
 	let stage: "lock" | "sync" | "grant" | "persist" | "publish" = "lock";
 	try {
@@ -351,6 +371,9 @@ export async function ensureFresh(
 					const adopted = await adoptRemote(label, current, "newer", config);
 					if (adopted) return adopted;
 				}
+				// Nothing newer yet: a consumer leaves the renewal to the manager.
+				if (!opts.force && current.expires > Date.now() + grantAt)
+					return current;
 
 				stage = "grant";
 				await recordAuthEvent("refresh_start", current, {
@@ -643,7 +666,8 @@ export async function tick(opts: { usage?: boolean } = {}): Promise<void> {
 	for (const account of store.accounts) {
 		if (account.dead) continue;
 		const idle = now - (account.lastGrantAt ?? account.expires - 8 * 3_600_000);
-		const nearExpiry = account.expires <= now + refreshBuffer(store);
+		// The 5-minute sync sweep already looks for successors; renew only at our own mark.
+		const nearExpiry = account.expires <= now + grantBuffer(store);
 		if (nearExpiry) await ensureFresh(account.label);
 		// Keep-alive is a grant too: only the manager spends it when synced.
 		else if (idle > KEEPALIVE_MS && (!syncOn(store.sync) || store.role === "manager")) {

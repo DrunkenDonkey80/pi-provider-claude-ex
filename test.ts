@@ -1027,9 +1027,19 @@ await check("priority: ++ first, -- last, +/- bend the rank", () => {
 await check("sync role sets how close to expiry this machine renews", async () => {
 	const pool = await import("./pool.ts");
 	const sync = { url: "git@github.com:me/pool.git", key: "ab".repeat(32) };
-	assert.equal(pool.refreshBuffer({ accounts: [] }), 10 * 60_000, "no sync: lazy as before");
-	assert.equal(pool.refreshBuffer({ accounts: [], sync }), 3_600_000, "consumer by default");
-	assert.equal(pool.refreshBuffer({ accounts: [], sync, role: "manager" }), 4 * 3_600_000);
+	assert.equal(pool.grantBuffer({ accounts: [] }), 10 * 60_000, "no sync: lazy as before");
+	assert.equal(pool.grantBuffer({ accounts: [], sync }), 3_600_000, "consumer by default");
+	assert.equal(pool.grantBuffer({ accounts: [], sync, role: "manager" }), 4 * 3_600_000);
+	assert.equal(pool.refreshBuffer({ accounts: [], sync }), 4 * 3_600_000, "consumer looks from the manager's mark");
+	// 3h left: a consumer looks in the repo but must not renew itself.
+	writeFileSync(store.POOL_PATH, JSON.stringify({ enabled: true, sync, accounts: [acct("c", { expires: Date.now() + 3 * 3_600_000 })] }));
+	const fetch = globalThis.fetch;
+	globalThis.fetch = async () => { throw new Error("a consumer must not renew with 3h left"); };
+	try {
+		assert.equal((await pool.ensureFresh("c"))?.refresh, "rt-c-1");
+	} finally {
+		globalThis.fetch = fetch;
+	}
 });
 
 await check("a synced machine with no role is warned once per session", async () => {
