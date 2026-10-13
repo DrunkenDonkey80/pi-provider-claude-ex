@@ -348,7 +348,7 @@ export function setupCommands(pi: ExtensionAPI): void {
 							new Text(
 								theme.fg(
 									"accent",
-									theme.bold(`Claude accounts${syncOn(fresh.sync) ? ` (${fresh.role ?? "consumer"})` : ""}`),
+									theme.bold(`Claude accounts${syncOn(fresh.sync) ? ` (${fresh.role ?? "role not set: consumer"})` : ""}`),
 								),
 								1,
 								0,
@@ -748,8 +748,11 @@ export async function applySync(arg: string): Promise<string> {
 	const word = arg.toLowerCase();
 	if (word === "now") {
 		if (!syncReady(readStore().sync)) return "No repo set — add one first.";
-		const { adopted, pushed } = await syncNow();
-		return `Synced: adopted ${adopted}, published ${pushed}.`;
+		const { adopted, pushed, current, error } = await syncNow();
+		const total = readStore().accounts.length;
+		return error
+			? `Sync FAILED — git could not fetch the repo, so these are old tokens:\n${error}`
+			: `Synced: ${current ?? 0}/${total} current (adopted ${adopted}, published ${pushed}).${(current ?? 0) < total ? " The rest are dead in the repo too: /login anthropic + /claude-pool-add on any machine." : ""}`;
 	}
 	if (word === "on" || word === "off") {
 		if (!syncReady(readStore().sync)) return "No repo set — add one first.";
@@ -772,30 +775,21 @@ export async function applySync(arg: string): Promise<string> {
 	}
 }
 
-const ROLE_MANAGER = "Manager — this machine renews the tokens and publishes them (pick on ONE machine, the one on most)";
-const ROLE_CONSUMER = "Consumer — take tokens from sync; renew only if the manager is down";
-let roleAsked = false;
+let roleWarned = false;
 
 /**
- * Synced machines must agree on one renewer, so a synced machine with no role
- * yet asks once per process. Esc or no UI leaves it unset: behaves as a
- * consumer and is asked again next session.
+ * Synced machines must agree on one renewer. A synced machine with no role yet
+ * gets one warning per session (no prompt: a host may start 15 sessions at
+ * once); it behaves as a consumer meanwhile.
  */
-export async function askRoleOnce(ctx: Ctx): Promise<void> {
+export function warnRoleUnset(ctx: Ctx): void {
 	const store = readStore();
-	if (roleAsked || store.role || !syncOn(store.sync) || !ctx.ui.select) return;
-	roleAsked = true;
-	const pick = await ctx.ui.select(
-		"Claude pool sync: which role should this machine have? Exactly one synced machine should be the manager.",
-		[ROLE_MANAGER, ROLE_CONSUMER],
+	if (roleWarned || store.role || !syncOn(store.sync)) return;
+	roleWarned = true;
+	ctx.ui.notify(
+		"Claude pool sync: this machine has no role (acting as consumer). Run /claude-pool-role manager on exactly ONE machine, /claude-pool-role consumer on the others.",
+		"warning",
 	);
-	if (!pick) return;
-	const role = pick === ROLE_MANAGER ? "manager" : "consumer";
-	await mutateStore((s) => {
-		s.role = role;
-	});
-	invalidateSnapshot();
-	ctx.ui.notify(`This machine is now the ${role}. Change it with /claude-pool-role.`, "info");
 }
 
 /** Drop an account from the pool (shared by /claude-pool-remove and the menu). */

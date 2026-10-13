@@ -51,6 +51,7 @@ import {
 	type SyncedCred,
 	credOf,
 	fresher,
+	lastFetchError,
 	pullAll,
 	pullCred,
 	pushAll,
@@ -448,6 +449,9 @@ export function syncPlan(
 export async function syncNow(): Promise<{
 	adopted: number;
 	pushed: number;
+	/** Accounts holding exactly the repo's token after this pass. */
+	current?: number;
+	error?: string;
 }> {
 	const config = readStore().sync;
 	if (!syncReady(config)) return { adopted: 0, pushed: 0 };
@@ -461,7 +465,11 @@ export async function syncNow(): Promise<{
 	let adopted = 0;
 	for (const account of adopt)
 		if (await adoptRemote(account.label, account, "any", config)) adopted++;
-	return { adopted, pushed: await pushAll(publish.map(credOf), config) };
+	const pushed = await pushAll(publish.map(credOf), config);
+	const current = readStore().accounts.filter(
+		(a) => !a.dead && remote.get(a.label)?.refresh === a.refresh,
+	).length + pushed;
+	return { adopted, pushed, current, error: lastFetchError };
 }
 
 // ─── caps / cooldown ────────────────────────────────────────────────────────

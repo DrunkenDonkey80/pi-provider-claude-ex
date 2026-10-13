@@ -135,12 +135,17 @@ const git = (args: string[], cwd = SYNC_DIR): string =>
 		env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
 	});
 
+/** Why the last fetch failed, so `sync now` can say it instead of "adopted 0". */
+export let lastFetchError: string | undefined;
+
 function fetchLatest(): void {
 	try {
 		git(["fetch", "--quiet", "--depth", "1", "origin"]);
 		git(["reset", "--quiet", "--hard", "FETCH_HEAD"]);
 		git(["clean", "-qfd"]);
+		lastFetchError = undefined;
 	} catch (error) {
+		lastFetchError = String((error as { stderr?: string }).stderr || (error as Error).message).trim().split("\n")[0];
 		void recordAuthEvent("sync_fetch_failed", { label: "(sync)" }, { error });
 		// An empty remote has nothing to fetch — that is the first-push case.
 	}
@@ -270,6 +275,7 @@ export async function pullAll(
 			{ timeoutMs: 20_000 },
 		);
 	} catch (error) {
+		lastFetchError = (error as Error).message.split("\n")[0];
 		await recordAuthEvent("sync_failed", { label: "(sync)" }, { error });
 		return new Map();
 	}

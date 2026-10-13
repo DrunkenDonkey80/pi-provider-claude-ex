@@ -1032,20 +1032,16 @@ await check("sync role sets how close to expiry this machine renews", async () =
 	assert.equal(pool.refreshBuffer({ accounts: [], sync, role: "manager" }), 4 * 3_600_000);
 });
 
-await check("a synced machine with no role asks once; esc leaves it unset", async () => {
+await check("a synced machine with no role is warned once per session", async () => {
 	const commands = await import("./commands.ts");
 	const sync = { url: "git@github.com:me/pool.git", key: "ab".repeat(32) };
 	writeFileSync(store.POOL_PATH, JSON.stringify({ enabled: true, sync, accounts: [acct("r")] }));
-	const asked: string[][] = [];
-	const ui = (answer?: number) => ({ ui: {
-		notify: () => {},
-		select: async (_t: string, o: string[]) => (asked.push(o), answer === undefined ? undefined : o[answer]),
-	} });
-	await commands.askRoleOnce(ui(0));
-	assert.equal(asked.length, 1);
-	assert.equal(store.readStore().role, "manager");
-	await commands.askRoleOnce(ui(1));
-	assert.equal(asked.length, 1, "asked once only");
+	const warned: string[] = [];
+	const ctx = { ui: { notify: (m: string, level?: string) => void warned.push(`${level}:${m}`) } };
+	commands.warnRoleUnset(ctx);
+	commands.warnRoleUnset(ctx);
+	assert.equal(warned.length, 1);
+	assert.match(warned[0], /^warning:.*no role/);
 });
 
 // A login that ends before the weekly reset kills the quota first: rank by it.
