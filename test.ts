@@ -497,6 +497,22 @@ await check(
 	},
 );
 
+await check("a pool-only machine gets an anthropic slot so pi lists the models", async () => {
+	const commands = await import("./commands.ts");
+	seed([acct("live")]);
+	writeFileSync(join(dir, "auth.json"), JSON.stringify({ "openai-codex": { type: "oauth" } }));
+	try {
+		assert.equal(commands.seedAnthropicAuth(), true);
+		const auth = JSON.parse(readFileSync(join(dir, "auth.json"), "utf-8"));
+		assert.equal(auth.anthropic.type, "oauth");
+		assert.equal(auth.anthropic.refresh, "rt-live-1");
+		assert.ok(auth["openai-codex"], "other logins survive");
+		assert.equal(commands.seedAnthropicAuth(), false, "an existing slot is never touched");
+	} finally {
+		rmSync(join(dir, "auth.json"), { force: true });
+	}
+});
+
 // pi's auth.json is written once by /login and never rotated, so it goes stale
 // as soon as the pool refreshes that lineage. Adopting it at session start
 // minted `account-<now>` — a ghost that came back under a new name each time it

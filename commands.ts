@@ -88,6 +88,28 @@ function readAnthropicAuth():
 }
 
 /**
+ * Pi lists Anthropic models only when auth.json holds an anthropic login. A
+ * machine that got its accounts by import/sync never ran /login, so seed the
+ * slot from a live pool account; getApiKey serves the real token per request.
+ * Never touches an existing entry. Returns true when it wrote one.
+ */
+export function seedAnthropicAuth(): boolean {
+	if (readAnthropicAuth()) return false;
+	const account = readStore().accounts.find((a) => !a.dead && !a.disabled && a.refresh && a.access);
+	if (!account) return false;
+	const path = join(AGENT_DIR, "auth.json");
+	let auth: Record<string, unknown> = {};
+	try {
+		if (existsSync(path)) auth = JSON.parse(readFileSync(path, "utf-8"));
+	} catch {
+		return false; // unreadable: never overwrite the user's other logins
+	}
+	auth.anthropic = { type: "oauth", refresh: account.refresh, access: account.access, expires: account.expires };
+	writeJsonAtomic(path, auth);
+	return true;
+}
+
+/**
  * Attach the credential `/login anthropic` just wrote to a pool entry.
  *
  * Anthropic REVOKES an account's previous refresh lineage when you log into it

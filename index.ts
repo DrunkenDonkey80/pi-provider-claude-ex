@@ -18,7 +18,7 @@ import { appendFileSync } from "node:fs";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { loginAnthropicOAuth } from "./oauth.ts";
 import { isPlainObject, transformPayload, unaliasToolCalls } from "./tools.ts";
-import { attachCurrentLogin, warnRoleUnset, setupCommands } from "./commands.ts";
+import { attachCurrentLogin, seedAnthropicAuth, warnRoleUnset, setupCommands } from "./commands.ts";
 import {
 	AUTH_RE,
 	LIMIT_RE,
@@ -86,6 +86,11 @@ function setupPool(pi: ExtensionAPI): void {
 	if (!poolEnabled()) return;
 	const labels = readStore().accounts.map((a) => a.label);
 	writeDebugLog({ stage: "pool", msg: `pool active: ${labels.join(", ")}` });
+	try {
+		if (seedAnthropicAuth()) writeDebugLog({ stage: "pool", msg: "seeded auth.json anthropic from the pool" });
+	} catch {
+		/* models just stay hidden until /login; never block loading */
+	}
 
 	// Before each turn: make sure the account we're about to use has a live
 	// token. Lock + consume gate make this a no-op when it's already fresh, so
