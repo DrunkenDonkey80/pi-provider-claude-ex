@@ -1063,6 +1063,22 @@ await check("a new token clears the old token's usage 401", async () => {
 	assert.equal(entry.nextPollAt, 0, "re-checked on the next poll, not after the backoff");
 });
 
+await check("drain 7d ranks by the soonest weekly reset, ignoring 5h", async () => {
+	const format = await import("./format.ts");
+	const now = Date.UTC(2026, 9, 14, 10);
+	const at = (h: number) => new Date(now + h * 3_600_000).toISOString();
+	const accounts = [acct("fresh5h"), acct("soon")];
+	const cache = {
+		fresh5h: { five_hour: { pct: 0, resets_at: at(0.2) }, seven_day: { pct: 10, resets_at: at(30) } },
+		soon: { five_hour: { pct: 80, resets_at: at(4) }, seven_day: { pct: 50, resets_at: at(40) } },
+	};
+	const order = (drain: boolean) =>
+		format.sortAccountsForDisplay(accounts, cache, now, drain).map((a) => a.label);
+	assert.deepEqual(order(true), ["fresh5h", "soon"]);
+	cache.fresh5h.seven_day.resets_at = at(50);
+	assert.deepEqual(order(true), ["soon", "fresh5h"], "5h state must not matter");
+});
+
 // A login that ends before the weekly reset kills the quota first: rank by it.
 await check("ranking uses the login end when it comes before the 7d reset", async () => {
 	const format = await import("./format.ts");

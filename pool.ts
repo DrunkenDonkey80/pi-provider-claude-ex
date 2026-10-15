@@ -549,7 +549,7 @@ async function parkFull(labels: string[]): Promise<void> {
  * Falls back to `pickActive` when nothing is usable (soonest cooldown).
  */
 export function bestLabel(store: Store, now = Date.now()): string | undefined {
-	const ranked = sortAccountsForDisplay(store.accounts, readUsage(), now);
+	const ranked = sortAccountsForDisplay(store.accounts, readUsage(), now, store.drain7d);
 	return ranked.find((a) => usable(a, now))?.label ?? pickActive(store);
 }
 

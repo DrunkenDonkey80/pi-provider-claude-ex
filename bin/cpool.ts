@@ -101,7 +101,7 @@ switch (command) {
 			);
 			break;
 		}
-		console.log(poolTable(store.accounts, pickActive(store), cache));
+		console.log(poolTable(store.accounts, pickActive(store), cache, store.drain7d));
 		break;
 	}
 

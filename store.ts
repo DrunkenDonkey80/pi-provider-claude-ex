@@ -101,6 +101,11 @@ export interface Store {
 	role?: "manager" | "consumer";
 	/** Label of the pinned active account (sticky across restarts). */
 	active?: string;
+	/**
+	 * Away mode (m in /claude-pool): rank purely by the soonest 7d deadline, no
+	 * 5h or night terms, to drain the weeks that expire while nobody is here.
+	 */
+	drain7d?: boolean;
 	/** Re-pick the best account in the background. Default ON (undefined = on). */
 	autoSwitch?: boolean;
 	/** The pin was a human choice: hold it until that account runs out. */

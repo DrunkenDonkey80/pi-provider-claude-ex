@@ -19,6 +19,7 @@ import {
 	ensureFresh,
 	invalidateSnapshot,
 	pickActive,
+	pickNext,
 	setActive,
 	syncNow,
 } from "./pool.ts";
@@ -309,6 +310,7 @@ export function setupCommands(pi: ExtensionAPI): void {
 					| "switch"
 					| "favorite"
 					| "weekend"
+					| "mode"
 					| "refresh"
 					| "toggle"
 					| "remove"
@@ -323,7 +325,7 @@ export function setupCommands(pi: ExtensionAPI): void {
 				if (!fresh.accounts.length) return;
 				const cache = readUsage();
 				const active = pickActive(fresh);
-				const visible = sortAccountsForDisplay(fresh.accounts, cache);
+				const visible = sortAccountsForDisplay(fresh.accounts, cache, Date.now(), fresh.drain7d);
 				const pick = await ctx.ui.custom<MenuAction | null>(
 					(tui, theme, _kb, done) => {
 						const list = new SelectList(
@@ -348,7 +350,7 @@ export function setupCommands(pi: ExtensionAPI): void {
 							new Text(
 								theme.fg(
 									"accent",
-									theme.bold(`Claude accounts${syncOn(fresh.sync) ? ` (${fresh.role ?? "role not set: consumer"})` : ""}`),
+									theme.bold(`Claude accounts${syncOn(fresh.sync) ? ` (${fresh.role ?? "role not set: consumer"})` : ""}${fresh.drain7d ? " · DRAIN 7d: soonest weekly reset first" : ""}`),
 								),
 								1,
 								0,
@@ -359,7 +361,7 @@ export function setupCommands(pi: ExtensionAPI): void {
 							new Text(
 								theme.fg(
 									"dim",
-									"enter favorite • w weekend • s switch • r refresh usage • +/- priority • d enable/disable • del remove • esc close",
+									"enter favorite • w weekend • m drain-7d mode • s switch • r refresh usage • +/- priority • d enable/disable • del remove • esc close",
 								),
 								1,
 								0,
@@ -379,6 +381,7 @@ export function setupCommands(pi: ExtensionAPI): void {
 								if (data === "r") return onKey("refresh");
 								if (data === "s") return onKey("switch");
 								if (data === "w") return onKey("weekend");
+								if (data === "m") return done({ act: "mode", label: "" });
 								if (data === "d") return onKey("toggle");
 								list.handleInput(data);
 								tui.requestRender();
@@ -407,6 +410,12 @@ export function setupCommands(pi: ExtensionAPI): void {
 							ctx.ui.notify(`sync rescued ${adopted} dead account(s)`, "info");
 					}
 					await refreshVisibleUsage();
+				} else if (pick.act === "mode") {
+					const on = await mutateStore((s) => (s.drain7d = !s.drain7d));
+					invalidateSnapshot();
+					// Re-pick now rather than at the next 20-min sweep.
+					await pickNext({ force: true });
+					ctx.ui.notify(on ? "Drain 7d ON: serving the soonest-expiring week, 5h ignored." : "Normal ranking.", "info");
 				} else if (pick.act === "favorite" || pick.act === "weekend")
 					await toggleFlag(pick.label, pick.act);
 				else if (pick.act === "toggle") await toggleDisabled(pick.label);

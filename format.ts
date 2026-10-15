@@ -380,6 +380,7 @@ export function sortAccountsForDisplay(
 	accounts: Account[],
 	cache: UsageCache,
 	now = Date.now(),
+	drain7d = false,
 ): Account[] {
 	const ranked = accounts.map((account, index) => {
 		const usage = cache[account.label];
@@ -430,8 +431,8 @@ export function sortAccountsForDisplay(
 				if (tier) return tier;
 				// Compared, not subtracted: two unknown resets are both +Infinity and
 				// Infinity - Infinity is NaN, which corrupts the whole sort.
-				const ra = readyRank(a, now);
-				const rb = readyRank(b, now);
+				const ra = drain7d ? a.reset7 : readyRank(a, now);
+				const rb = drain7d ? b.reset7 : readyRank(b, now);
 				if (ra !== rb) return ra - rb;
 				return a.pct5 - b.pct5 || a.index - b.index;
 			}
@@ -445,10 +446,11 @@ export function poolTable(
 	accounts: Account[],
 	activeLabel: string | undefined,
 	cache: UsageCache,
+	drain7d = false,
 ): string {
 	if (!accounts.length)
 		return "(no accounts — /claude-pool-add <label> after /login anthropic)";
-	return sortAccountsForDisplay(accounts, cache)
+	return sortAccountsForDisplay(accounts, cache, Date.now(), drain7d)
 		.map((a, i) => accountLine(a, i, cache[a.label], a.label === activeLabel))
 		.join("\n");
 }
