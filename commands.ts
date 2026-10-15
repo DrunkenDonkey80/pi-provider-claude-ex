@@ -486,8 +486,8 @@ export function setupCommands(pi: ExtensionAPI): void {
 
 	register("claude-pool-export", {
 		description:
-			"Write the pooled Claude logins to a portable file (and the clipboard)",
-		handler: async (_args, ctx) => {
+			"Write the pooled Claude logins to a portable file (and the clipboard); optional file path",
+		handler: async (args, ctx) => {
 			const accounts = readStore().accounts;
 			if (!accounts.length) {
 				ctx.ui.notify("No pooled accounts to export.", "warning");
@@ -496,12 +496,18 @@ export function setupCommands(pi: ExtensionAPI): void {
 			// The sync repo+key ride along: one export, and the other machine is
 			// wired to the shared repo without retyping a 64-char secret.
 			const payload = { accounts, sync: readStore().sync };
-			writeJsonAtomic(EXPORT_PATH, payload);
+			const path = args.trim().replace(/^["']|["']$/g, "") || EXPORT_PATH;
+			try {
+				writeJsonAtomic(path, payload);
+			} catch (e) {
+				ctx.ui.notify(`Export failed: ${(e as Error).message}`, "error");
+				return;
+			}
 			const copied = copyToClipboard(JSON.stringify(payload, null, 2));
 			ctx.ui.notify(
-				`Exported ${accounts.length} account(s). This holds refresh tokens — treat it like a password.\n${EXPORT_PATH}${
+				`Exported ${accounts.length} account(s). This holds refresh tokens — treat it like a password.\n${path}${
 					copied ? "\nContents copied to the clipboard." : ""
-				}\nOn the other machine: /claude-pool-import`,
+				}\nOn the other machine: /claude-pool-import${path === EXPORT_PATH ? "" : ` "${path}"`}`,
 				"info",
 			);
 		},
