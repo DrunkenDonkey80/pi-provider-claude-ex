@@ -264,6 +264,15 @@ function defaultLabel(accounts: Account[], profile: Profile): string {
 	return `${qualified.slice(0, -1)} ${(profile.orgUuid ?? "").slice(0, 6)})`;
 }
 
+/** Installed build: the checkout's commit, so "did the update land?" is visible. */
+const BUILD = (() => {
+	const out = spawnSync("git", ["-C", import.meta.dirname, "log", "-1", "--format=%h %cd", "--date=format:%m-%d %H:%M"], {
+		encoding: "utf-8",
+		windowsHide: true,
+	});
+	return out.status === 0 ? out.stdout.trim() : "unknown build";
+})();
+
 /** Where /claude-pool-export drops the portable copy of the logins. */
 const EXPORT_PATH = join(AGENT_DIR, "claude-pool-export.json");
 
@@ -372,7 +381,7 @@ export function setupCommands(pi: ExtensionAPI): void {
 							new Text(
 								theme.fg(
 									"accent",
-									theme.bold(`Claude accounts${syncOn(fresh.sync) ? ` (${fresh.role ?? "role not set: consumer"})` : ""}${fresh.drain7d ? " · DRAIN 7d: soonest weekly reset first" : ""}`),
+									theme.bold(`Claude accounts${syncOn(fresh.sync) ? ` (${fresh.role ?? "role not set: consumer"})` : ""}${fresh.drain7d ? " · DRAIN 7d: soonest weekly reset first" : ""}`) + theme.fg("dim", ` · ${BUILD}`),
 								),
 								1,
 								0,
