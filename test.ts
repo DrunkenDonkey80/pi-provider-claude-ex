@@ -594,6 +594,25 @@ await check("label-less add matches by email and asks when one email has two acc
 	}
 });
 
+// ce-workflow's hub page reads the pool list and runs menu actions through a pi event.
+await check("claude-pool:web exposes the list and the menu actions", async () => {
+	const commands = await import("./commands.ts");
+	let listener: ((info: Record<string, unknown>) => void) | undefined;
+	commands.setupCommands({
+		registerCommand: () => {},
+		registerShortcut: () => {},
+		events: { on: (name: string, fn: (info: Record<string, unknown>) => void) => { if (name === "claude-pool:web") listener = fn; } },
+	} as never);
+	seed([acct("one"), acct("two")]);
+	const info: { view?: typeof commands.poolView; action?: typeof commands.poolAction } = {};
+	listener!(info);
+	assert.deepEqual(info.view!().rows.map((r) => r.label).sort(), ["one", "two"]);
+	assert.equal(await info.action!("favorite", "two"), undefined);
+	assert.equal(info.view!().rows.find((r) => r.label === "two")?.favorite, true, "the action changed the store");
+	assert.match((await info.action!("mode", ""))!.text, /Drain 7d ON/);
+	assert.equal(info.view!().drain7d, true);
+});
+
 await check("a fresh login clears the replaced deadline without clearing user preferences", async () => {
 	const commands = await import("./commands.ts");
 	const fetch = globalThis.fetch;

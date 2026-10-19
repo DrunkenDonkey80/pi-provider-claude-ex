@@ -310,7 +310,63 @@ async function refreshVisibleUsage(): Promise<void> {
 	);
 }
 
+export type PoolAct = "switch" | "favorite" | "weekend" | "mode" | "refresh" | "toggle" | "remove" | "up" | "down";
+
+/** One /claude-pool menu action (the terminal menu and the hub page share it). Remove is unconfirmed: callers ask first. */
+export async function poolAction(act: PoolAct, label: string): Promise<{ text: string; level: "info" | "warning" } | undefined> {
+	if (act === "switch") {
+		const target = readStore().accounts.find((a) => a.label === label);
+		// Human choice: hold it until this account runs out, then auto resumes.
+		await setActive(label, { manual: true });
+		return { text: await switchReport(label), level: target?.dead ? "warning" : "info" };
+	}
+	if (act === "refresh") {
+		// A dead login may only be dead locally. Pull before refreshing, so the re-shown list reflects the rescue.
+		const store = readStore();
+		let rescued: string | undefined;
+		if (store.accounts.some((a) => a.dead) && syncOn(store.sync)) {
+			const { adopted } = await syncNow();
+			if (adopted) rescued = `sync rescued ${adopted} dead account(s)`;
+		}
+		await refreshVisibleUsage();
+		return rescued ? { text: rescued, level: "info" } : undefined;
+	}
+	if (act === "mode") {
+		const on = await mutateStore((s) => (s.drain7d = !s.drain7d));
+		invalidateSnapshot();
+		// Re-pick now rather than at the next 20-min sweep.
+		await pickNext({ force: true });
+		return { text: on ? "Drain 7d ON: serving the soonest-expiring week, 5h ignored." : "Normal ranking.", level: "info" };
+	}
+	if (act === "favorite" || act === "weekend") await toggleFlag(label, act);
+	else if (act === "toggle") await toggleDisabled(label);
+	else if (act === "up") await shiftPriority(label, 1);
+	else if (act === "down") await shiftPriority(label, -1);
+	else if (act === "remove") await removeFromPool(label);
+	return undefined;
+}
+
+/** The /claude-pool list as data: the menu's own row text (ANSI colours) plus flags, in display order. */
+export function poolView() {
+	const store = readStore(), cache = readUsage(), active = pickActive(store);
+	const rows = sortAccountsForDisplay(store.accounts, cache, Date.now(), store.drain7d).map((a, i) => ({
+		label: a.label,
+		line: accountLine(a, i, cache[a.label], a.label === active),
+		active: a.label === active,
+		favorite: !!a.favorite,
+		weekend: !!a.weekend,
+		disabled: !!a.disabled,
+		dead: !!a.dead,
+	}));
+	return { title: `Claude accounts${syncOn(store.sync) ? ` (${store.role ?? "role not set: consumer"})` : ""}`, drain7d: !!store.drain7d, rows };
+}
+
 export function setupCommands(pi: ExtensionAPI): void {
+	// Other extensions (ce-workflow's hub page) reach the pool list and its actions without importing this package.
+	pi.events?.on?.("claude-pool:web", (info: { view?: typeof poolView; action?: typeof poolAction }) => {
+		info.view = poolView;
+		info.action = poolAction;
+	});
 	// SAFETY: Pi's public registerCommand type is generic over its own ctx; the
 	// handlers only ever touch the Ui members declared below, which TUI builds
 	// provide. Narrowing to Ui keeps this file independent of the ctx type's
@@ -336,19 +392,7 @@ export function setupCommands(pi: ExtensionAPI): void {
 			const { Container, SelectList, Text, matchesKey } = await import(
 				"@earendil-works/pi-tui"
 			);
-			type MenuAction = {
-				act:
-					| "switch"
-					| "favorite"
-					| "weekend"
-					| "mode"
-					| "refresh"
-					| "toggle"
-					| "remove"
-					| "up"
-					| "down";
-				label: string;
-			};
+			type MenuAction = { act: PoolAct; label: string };
 			// The list stays up: refresh / enable-disable / remove re-present it with
 			// current data. Only a switch or esc closes it.
 			for (;;) {
@@ -421,42 +465,15 @@ export function setupCommands(pi: ExtensionAPI): void {
 					},
 				);
 				if (!pick) return; // Esc
-				if (pick.act === "switch") {
-					const target = fresh.accounts.find((a) => a.label === pick.label);
-					// Human choice: hold it until this account runs out, then auto resumes.
-					await setActive(pick.label, { manual: true });
-					ctx.ui.notify(
-						await switchReport(pick.label),
-						target?.dead ? "warning" : "info",
-					);
-					return;
-				}
-				if (pick.act === "refresh") {
-					// A dead login may only be dead locally. Pull before refreshing, so
-					// the re-shown menu reflects the rescue (the loop re-presents itself).
-					const store = readStore();
-					if (store.accounts.some((a) => a.dead) && syncOn(store.sync)) {
-						const { adopted } = await syncNow();
-						if (adopted)
-							ctx.ui.notify(`sync rescued ${adopted} dead account(s)`, "info");
-					}
-					await refreshVisibleUsage();
-				} else if (pick.act === "mode") {
-					const on = await mutateStore((s) => (s.drain7d = !s.drain7d));
-					invalidateSnapshot();
-					// Re-pick now rather than at the next 20-min sweep.
-					await pickNext({ force: true });
-					ctx.ui.notify(on ? "Drain 7d ON: serving the soonest-expiring week, 5h ignored." : "Normal ranking.", "info");
-				} else if (pick.act === "favorite" || pick.act === "weekend")
-					await toggleFlag(pick.label, pick.act);
-				else if (pick.act === "toggle") await toggleDisabled(pick.label);
-				else if (pick.act === "up") await shiftPriority(pick.label, 1);
-				else if (pick.act === "down") await shiftPriority(pick.label, -1);
-				else if (
-					!ctx.ui.confirm ||
-					(await ctx.ui.confirm(`Remove "${pick.label}" from the pool?`))
+				if (
+					pick.act === "remove" &&
+					ctx.ui.confirm &&
+					!(await ctx.ui.confirm(`Remove "${pick.label}" from the pool?`))
 				)
-					await removeFromPool(pick.label);
+					continue;
+				const message = await poolAction(pick.act, pick.label);
+				if (message) ctx.ui.notify(message.text, message.level);
+				if (pick.act === "switch") return;
 			}
 		},
 	};
