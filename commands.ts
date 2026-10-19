@@ -23,7 +23,7 @@ import {
 	setActive,
 	syncNow,
 } from "./pool.ts";
-import { checkRepo, credOf, newKey, pullCred, pushCred, syncOn, syncReady } from "./sync.ts";
+import { checkRepo, credOf, newKey, pullCred, pushCred, syncHealth, syncOn, syncReady } from "./sync.ts";
 import {
 	accountLine,
 	relative,
@@ -65,8 +65,26 @@ type Register = (
 	def: {
 		description: string;
 		handler: (args: string, ctx: Ctx) => Promise<void>;
+		getArgumentCompletions?: (prefix: string) => { value: string; label: string }[] | null;
 	},
 ) => void;
+
+/** Fixed argument words per command; account-taking commands complete labels. */
+const ARGS: Record<string, () => string[]> = {
+	"claude-pool-role": () => ["manager", "consumer"],
+	"claude-pool-sync": () => ["now", "on", "off"],
+	"claude-pool-warm": () => ["off", "1", "2", "all"],
+	"claude-pool-remove": () => readStore().accounts.map((a) => a.label),
+	"claude-pool-disable": () => readStore().accounts.map((a) => a.label),
+	"claude-pool-add": () => readStore().accounts.map((a) => a.label),
+};
+
+export function argCompletions(command: string, prefix: string): { value: string; label: string }[] | null {
+	const words = ARGS[command]?.() ?? [];
+	const p = prefix.trim().toLowerCase();
+	const hits = words.filter((w) => w.toLowerCase().startsWith(p));
+	return hits.length ? hits.map((w) => ({ value: w, label: w })) : null;
+}
 
 /** Read the single-slot anthropic OAuth creds the native /login wrote. */
 function readAnthropicAuth():
@@ -358,7 +376,7 @@ export function poolView() {
 		disabled: !!a.disabled,
 		dead: !!a.dead,
 	}));
-	return { title: `Claude accounts${syncOn(store.sync) ? ` (${store.role ?? "role not set: consumer"})` : ""}`, drain7d: !!store.drain7d, rows };
+	return { title: `Claude accounts${syncOn(store.sync) ? ` (${store.role ?? "role not set: consumer"})` : ""}${syncBroken(store) ? ` · SYNC BROKEN: ${syncBroken(store)}` : ""}`, drain7d: !!store.drain7d, rows };
 }
 
 export function setupCommands(pi: ExtensionAPI): void {
@@ -371,7 +389,9 @@ export function setupCommands(pi: ExtensionAPI): void {
 	// handlers only ever touch the Ui members declared below, which TUI builds
 	// provide. Narrowing to Ui keeps this file independent of the ctx type's
 	// version-to-version churn.
-	const register = pi.registerCommand as unknown as Register;
+	const registerRaw = pi.registerCommand as unknown as Register;
+	const register: Register = (name, def) =>
+		registerRaw(name, ARGS[name] ? { ...def, getArgumentCompletions: (p) => argCompletions(name, p) } : def);
 
 	const pool: Parameters<Register>[1] = {
 		description: "Open the Claude account pool",
@@ -425,7 +445,7 @@ export function setupCommands(pi: ExtensionAPI): void {
 							new Text(
 								theme.fg(
 									"accent",
-									theme.bold(`Claude accounts${syncOn(fresh.sync) ? ` (${fresh.role ?? "role not set: consumer"})` : ""}${fresh.drain7d ? " · DRAIN 7d: soonest weekly reset first" : ""}`) + theme.fg("dim", ` · ${BUILD}`),
+									theme.bold(`Claude accounts${syncOn(fresh.sync) ? ` (${fresh.role ?? "role not set: consumer"})` : ""}${fresh.drain7d ? " · DRAIN 7d: soonest weekly reset first" : ""}`) + (syncBroken(fresh) ? theme.fg("error", ` · SYNC BROKEN: ${syncBroken(fresh)}`) : "") + theme.fg("dim", ` · ${BUILD}`),
 								),
 								1,
 								0,
@@ -839,6 +859,11 @@ export async function applySync(arg: string): Promise<string> {
 }
 
 let roleWarned = false;
+let syncWarned = false;
+
+/** The last git error when sync is on and the repo can't be reached. */
+const syncBroken = (store: { sync?: SyncConfig }): string | undefined =>
+	syncOn(store.sync) ? syncHealth().error : undefined;
 
 /**
  * Synced machines must agree on one renewer. A synced machine with no role yet
@@ -847,6 +872,14 @@ let roleWarned = false;
  */
 export function warnRoleUnset(ctx: Ctx): void {
 	const store = readStore();
+	const broken = syncBroken(store);
+	if (broken && !syncWarned) {
+		syncWarned = true;
+		ctx.ui.notify(
+			`Claude pool SYNC BROKEN: git can't reach the repo (${broken}). This machine can't get renewed tokens; it won't renew them itself either. Fix git access, then /claude-pool-sync now.`,
+			"error",
+		);
+	}
 	if (roleWarned || store.role || !syncOn(store.sync)) return;
 	roleWarned = true;
 	ctx.ui.notify(

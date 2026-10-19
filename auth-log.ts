@@ -10,7 +10,7 @@ export const AUTH_LOG_LIMIT = 500;
 export type RefreshCause = "expiry" | "manual" | "auth_error" | "keepalive" | "forced";
 type AuthEvent = "refresh_start" | "refresh_ok" | "refresh_failed" | "dead"
 	| "local_adopt" | "sync_check" | "sync_adopt" | "refresh_exception"
-	| "sync_fetch_failed" | "sync_failed" | "sync_push_failed" | "sync_published";
+	| "refresh_skipped" | "sync_fetch_failed" | "sync_failed" | "sync_push_failed" | "sync_published";
 interface Details {
 	cause?: RefreshCause;
 	status?: number;

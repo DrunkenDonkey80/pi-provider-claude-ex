@@ -38,6 +38,7 @@ import {
 	tick,
 } from "./pool.ts";
 import { readStore } from "./store.ts";
+import { syncHealth, syncOn } from "./sync.ts";
 import { readUsage, type UsageEntry } from "./usage.ts";
 
 /** Random spread added to each sweep, so parallel sessions don't stay in step. */
@@ -174,12 +175,13 @@ function setupPool(pi: ExtensionAPI): void {
 
 			const previous = activeAccount()?.label;
 			if (!previous) return undefined;
+			const oldAccess = activeAccount()?.access;
 
 			// 401: the server rejected a token we thought was live. Force-refresh
 			// in place (the consume gate still declines to POST a spent grant).
 			if (AUTH_RE.test(msg.errorMessage) && !LIMIT_RE.test(msg.errorMessage)) {
 				const account = await ensureFresh(previous, { force: true, cause: "auth_error" });
-				if (account && !account.dead) {
+				if (account && !account.dead && account.access !== oldAccess) {
 					// Reworded so pi's own retry resends it (bounded by its retry budget).
 					ctx.ui.notify(`Claude account "${previous}" had a stale token — refreshed, retrying.`, "info");
 					return {
@@ -189,8 +191,11 @@ function setupPool(pi: ExtensionAPI): void {
 						},
 					};
 				}
+				const broken = syncOn(readStore().sync) ? syncHealth().error : undefined;
 				ctx.ui.notify(
-					`Claude account "${previous}" login is dead — run /login anthropic then /claude-pool-add ${previous}.`,
+					account && !account.dead && broken
+						? `Claude account "${previous}" token was revoked and sync can't reach the repo (${broken}) — fix git access on this machine, then /claude-pool-sync now.`
+						: `Claude account "${previous}" login is dead — run /login anthropic then /claude-pool-add ${previous}.`,
 					"warning",
 				);
 				return undefined;

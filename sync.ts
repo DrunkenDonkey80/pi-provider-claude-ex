@@ -42,7 +42,7 @@ import {
 } from "node:fs";
 import { hostname } from "node:os";
 import { join } from "node:path";
-import { AGENT_DIR, type SyncConfig, withLock } from "./store.ts";
+import { AGENT_DIR, type SyncConfig, readJson, withLock, writeJsonAtomic } from "./store.ts";
 import { recordAuthEvent } from "./auth-log.ts";
 
 export const SYNC_DIR = join(AGENT_DIR, "claude-pool-sync");
@@ -135,17 +135,37 @@ const git = (args: string[], cwd = SYNC_DIR): string =>
 		env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
 	});
 
-/** Why the last fetch failed, so `sync now` can say it instead of "adopted 0". */
-export let lastFetchError: string | undefined;
+/**
+ * Last git outcome, on disk so every session (and the F11 title) sees it: the
+ * background sweep runs in only one of them. error = the first git stderr line.
+ */
+export const SYNC_HEALTH_PATH = join(AGENT_DIR, "claude-pool-sync-health.json");
+export type SyncHealth = { at?: number; error?: string };
+export const syncHealth = (): SyncHealth => readJson<SyncHealth>(SYNC_HEALTH_PATH, {});
+
+function noteSync(error?: unknown): void {
+	const text =
+		error === undefined
+			? undefined
+			: (String((error as { stderr?: string }).stderr || (error as Error).message || error)
+					.split(/\r?\n/)
+					.map((l) => l.trim())
+					.find(Boolean) ?? "git failed");
+	try {
+		if (syncHealth().error !== text || !text) writeJsonAtomic(SYNC_HEALTH_PATH, { at: Date.now(), error: text });
+	} catch {
+		/* health is a display aid; never break a sync over it */
+	}
+}
 
 function fetchLatest(): void {
 	try {
 		git(["fetch", "--quiet", "--depth", "1", "origin"]);
 		git(["reset", "--quiet", "--hard", "FETCH_HEAD"]);
 		git(["clean", "-qfd"]);
-		lastFetchError = undefined;
+		noteSync();
 	} catch (error) {
-		lastFetchError = String((error as { stderr?: string }).stderr || (error as Error).message).trim().split("\n")[0];
+		noteSync(error);
 		void recordAuthEvent("sync_fetch_failed", { label: "(sync)" }, { error });
 		// An empty remote has nothing to fetch — that is the first-push case.
 	}
@@ -158,6 +178,7 @@ function ensureRepo(config: SyncConfig): void {
 		git(["clone", "--quiet", "--depth", "1", config.url, SYNC_DIR], AGENT_DIR);
 		git(["config", "user.email", "claude-pool@localhost"]);
 		git(["config", "user.name", "claude-pool"]);
+		noteSync();
 		return;
 	}
 	git(["remote", "set-url", "origin", config.url]);
@@ -195,6 +216,7 @@ export async function pullCred(
 			{ timeoutMs: 20_000 },
 		);
 	} catch (error) {
+		noteSync(error);
 		await recordAuthEvent("sync_failed", { label }, { error });
 		return undefined;
 	}
@@ -275,7 +297,7 @@ export async function pullAll(
 			{ timeoutMs: 20_000 },
 		);
 	} catch (error) {
-		lastFetchError = (error as Error).message.split("\n")[0];
+		noteSync(error);
 		await recordAuthEvent("sync_failed", { label: "(sync)" }, { error });
 		return new Map();
 	}
@@ -314,6 +336,7 @@ export async function pushAll(
 					}
 					try {
 						git(["push", "--quiet", "origin", "HEAD"]);
+						noteSync();
 						for (const cred of creds) void recordAuthEvent("sync_published", cred);
 						return written;
 					} catch (error) {
@@ -326,6 +349,7 @@ export async function pushAll(
 			{ timeoutMs: 40_000 },
 		);
 	} catch (error) {
+		noteSync(error);
 		await recordAuthEvent("sync_failed", { label: "(sync)" }, { error });
 		return 0;
 	}

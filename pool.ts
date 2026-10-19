@@ -52,7 +52,7 @@ import {
 	type SyncedCred,
 	credOf,
 	fresher,
-	lastFetchError,
+	syncHealth,
 	pullAll,
 	pullCred,
 	pushAll,
@@ -374,6 +374,12 @@ export async function ensureFresh(
 				// Nothing newer yet: a consumer leaves the renewal to the manager.
 				if (!opts.force && current.expires > Date.now() + grantAt)
 					return current;
+				// Repo unreachable: a consumer's renewal would revoke the manager's copy
+				// and could not be published, killing the account everywhere else.
+				if (syncOn(config) && store.role !== "manager" && syncHealth().error) {
+					await recordAuthEvent("refresh_skipped", current, { reason: "sync_broken" });
+					return current;
+				}
 
 				stage = "grant";
 				await recordAuthEvent("refresh_start", current, {
@@ -495,7 +501,7 @@ export async function syncNow(): Promise<{
 	const current = readStore().accounts.filter(
 		(a) => !a.dead && remote.get(a.label)?.refresh === a.refresh,
 	).length + pushed;
-	return { adopted, pushed, current, error: lastFetchError };
+	return { adopted, pushed, current, error: syncHealth().error };
 }
 
 // ─── caps / cooldown ────────────────────────────────────────────────────────

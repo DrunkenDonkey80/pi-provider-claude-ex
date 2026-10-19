@@ -1077,8 +1077,16 @@ await check("sync role sets how close to expiry this machine renews", async () =
 	}
 });
 
+await check("pool commands autocomplete their arguments", async () => {
+	const commands = await import("./commands.ts");
+	assert.deepEqual(commands.argCompletions("claude-pool-role", "co")?.map((c) => c.value), ["consumer"]);
+	assert.deepEqual(commands.argCompletions("claude-pool-sync", "")?.map((c) => c.value), ["now", "on", "off"]);
+	assert.equal(commands.argCompletions("claude-pool-role", "x"), null);
+});
+
 await check("a synced machine with no role is warned once per session", async () => {
 	const commands = await import("./commands.ts");
+	rmSync((await import("./sync.ts")).SYNC_HEALTH_PATH, { force: true }); // a healthy repo: role warning only
 	const sync = { url: "git@github.com:me/pool.git", key: "ab".repeat(32) };
 	writeFileSync(store.POOL_PATH, JSON.stringify({ enabled: true, sync, accounts: [acct("r")] }));
 	const warned: string[] = [];
@@ -1710,7 +1718,8 @@ await check("sync fetch failure remains visible when rescue finds only the rejec
 	rmSync(authLog.AUTH_LOG_PATH, { force: true });
 	const account = acct("sync-monitor", { expires: 1 });
 	const config = { url: "unused-test-remote", key: sync.newKey() };
-	writeFileSync(store.POOL_PATH, JSON.stringify({ accounts: [account], sync: config }));
+	// The manager: a consumer with broken sync never renews (tested below).
+	writeFileSync(store.POOL_PATH, JSON.stringify({ accounts: [account], sync: config, role: "manager" }));
 	fs.mkdirSync(join(sync.SYNC_DIR, ".git"), { recursive: true });
 	fs.mkdirSync(join(sync.SYNC_DIR, "accounts"), { recursive: true });
 	writeFileSync(join(sync.SYNC_DIR, sync.credPath(account.label, config.key)), sync.seal(sync.credOf(account), config.key));
@@ -1737,6 +1746,34 @@ await check("sync fetch failure remains visible when rescue finds only the rejec
 		childProcess.execFileSync = exec;
 		syncBuiltinESMExports();
 		rmSync(sync.SYNC_DIR, { recursive: true, force: true });
+		rmSync(sync.SYNC_HEALTH_PATH, { force: true });
+	}
+});
+
+await check("a consumer whose repo is unreachable never renews, and the failure is visible", async () => {
+	const account = acct("cut-off", { expires: 1 });
+	const config = { url: "unused-test-remote", key: sync.newKey() };
+	writeFileSync(store.POOL_PATH, JSON.stringify({ accounts: [account], sync: config }));
+	rmSync(sync.SYNC_DIR, { recursive: true, force: true });
+	const fetch = globalThis.fetch;
+	const exec = childProcess.execFileSync;
+	childProcess.execFileSync = (() => {
+		throw Object.assign(new Error("Command failed"), { status: 128, stderr: "git@github.com: Permission denied (publickey).\nfatal: Could not read" });
+	}) as typeof exec;
+	syncBuiltinESMExports();
+	globalThis.fetch = async () => {
+		throw new Error("a cut-off consumer must not spend the grant");
+	};
+	try {
+		const next = await (await import("./pool.ts")).ensureFresh(account.label, { force: true });
+		assert.equal(next?.refresh, account.refresh);
+		assert.equal(next?.dead, undefined);
+		assert.equal(sync.syncHealth().error, "git@github.com: Permission denied (publickey).");
+	} finally {
+		globalThis.fetch = fetch;
+		childProcess.execFileSync = exec;
+		syncBuiltinESMExports();
+		rmSync(sync.SYNC_HEALTH_PATH, { force: true });
 	}
 });
 
