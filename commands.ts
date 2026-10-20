@@ -26,6 +26,7 @@ import {
 import { checkRepo, credOf, newKey, pullCred, pushCred, syncHealth, syncOn, syncReady } from "./sync.ts";
 import {
 	accountLine,
+	accountView,
 	relative,
 	resolveAccount,
 	sortAccountsForDisplay,
@@ -328,10 +329,10 @@ async function refreshVisibleUsage(): Promise<void> {
 	);
 }
 
-export type PoolAct = "switch" | "favorite" | "weekend" | "mode" | "refresh" | "toggle" | "remove" | "up" | "down";
+export type PoolAct = "switch" | "favorite" | "weekend" | "mode" | "refresh" | "toggle" | "remove" | "up" | "down" | "priority";
 
 /** One /claude-pool menu action (the terminal menu and the hub page share it). Remove is unconfirmed: callers ask first. */
-export async function poolAction(act: PoolAct, label: string): Promise<{ text: string; level: "info" | "warning" } | undefined> {
+export async function poolAction(act: PoolAct, label: string, value?: number): Promise<{ text: string; level: "info" | "warning" } | undefined> {
 	if (act === "switch") {
 		const target = readStore().accounts.find((a) => a.label === label);
 		// Human choice: hold it until this account runs out, then auto resumes.
@@ -360,6 +361,8 @@ export async function poolAction(act: PoolAct, label: string): Promise<{ text: s
 	else if (act === "toggle") await toggleDisabled(label);
 	else if (act === "up") await shiftPriority(label, 1);
 	else if (act === "down") await shiftPriority(label, -1);
+	// Set the level outright (-2..2), as the hub's level menu picks one.
+	else if (act === "priority" && Number.isInteger(value)) await shiftPriority(label, (value as number) - (readStore().accounts.find((a) => a.label === label)?.priority ?? 0));
 	else if (act === "remove") await removeFromPool(label);
 	return undefined;
 }
@@ -370,6 +373,7 @@ export function poolView() {
 	const rows = sortAccountsForDisplay(store.accounts, cache, Date.now(), store.drain7d).map((a, i) => ({
 		label: a.label,
 		line: accountLine(a, i, cache[a.label], a.label === active),
+		...accountView(a, cache[a.label]),
 		active: a.label === active,
 		favorite: !!a.favorite,
 		weekend: !!a.weekend,

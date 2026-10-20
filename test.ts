@@ -609,6 +609,10 @@ await check("claude-pool:web exposes the list and the menu actions", async () =>
 	assert.deepEqual(info.view!().rows.map((r) => r.label).sort(), ["one", "two"]);
 	assert.equal(await info.action!("favorite", "two"), undefined);
 	assert.equal(info.view!().rows.find((r) => r.label === "two")?.favorite, true, "the action changed the store");
+	await info.action!("priority", "two", 2);
+	const two = info.view!().rows.find((r) => r.label === "two")!;
+	assert.equal(two.priority, 2, "priority sets the level outright");
+	assert.equal(typeof two.state, "string");
 	assert.match((await info.action!("mode", ""))!.text, /Drain 7d ON/);
 	assert.equal(info.view!().drain7d, true);
 });

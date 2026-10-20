@@ -188,6 +188,52 @@ export function accountLine(
 	return parts.join(" · ");
 }
 
+type Tone = "error" | "warning" | undefined;
+const plain = (s: string) => s.replace(/\x1b\[\d+m/g, "").replace(/\s+/g, " ").replace("( ", "(").trim();
+const toneOf = (s: string): Tone => (s.includes("\x1b[31m") ? "error" : s.includes("\x1b[33m") ? "warning" : undefined);
+
+/** One quota window as data for a graphical page: the same colours as the menu line. */
+function windowView(w: { pct: number; resets_at?: string } | undefined, redAt: number, yellowAt: number, urgent = false) {
+	if (!w) return null;
+	const pct = Math.round(w.pct), at = w.resets_at ? Date.parse(w.resets_at) : Number.NaN, left = at - Date.now();
+	return {
+		pct,
+		tone: toneOf(quotaColor(pct, "x")),
+		resets: Number.isFinite(at) ? relative(left) : undefined,
+		clock: !Number.isFinite(at) ? undefined : urgent ? ("error" as const) : toneOf(clockColor(left, pct, redAt, yellowAt, "x")),
+	};
+}
+
+/** The pool row as data (ce-workflow's hub draws bars from it); accountLine is the terminal text of the same facts. */
+export function accountView(account: Account, entry: UsageEntry | undefined) {
+	const notes: { text: string; tone?: Tone }[] = [];
+	const note = (s: string) => { if (plain(s)) notes.push({ text: plain(s), tone: toneOf(s) }); };
+	// "resets 2 (2d 7h)": saved limit resets, the next one expiring in 2d 7h.
+	if (entry?.resets && !entry.resets.why) {
+		const cell = resetsCell(entry), m = /resets (\d+)(?: \((.+)\))?/.exec(plain(cell));
+		if (m && m[1] !== "0") notes.push({ text: `${m[1]} saved reset${m[1] === "1" ? "" : "s"}${m[2] ? `, expires in ${m[2]}` : ""}`, tone: toneOf(cell) });
+	}
+	if (account.weekend) { const w = weekendState(entry); note(w.state === "drain" ? `weekend: drain to ${Math.ceil(w.floor ?? 0)}%` : `weekend: ${w.state}`); }
+	for (const s of entry?.scoped ?? []) note(`${s.name} ${Math.round(s.pct)}%`);
+	if (entry?.spend) note(`spend ${entry.spend.used.toFixed(2)}/${entry.spend.limit.toFixed(2)} ${entry.spend.currency}`);
+	const loginLeft = (account.refreshExpires ?? Number.POSITIVE_INFINITY) - Date.now();
+	if (!account.dead && loginLeft > 0 && loginLeft < 3 * DAY) note(yellow(`login ends in ${relative(loginLeft)}`));
+	if (entry?.error) note(yellow(`usage: ${entry.error}`));
+	else if (entry?.at && Date.now() - entry.at > SERVE_TTL_MS) note(`as of ${relative(Date.now() - entry.at)} ago`);
+	else if (!entry?.at) note("usage not fetched yet");
+	const login = plain(loginTag(account, entry)).replace(/[[\]]/g, "").toLowerCase();
+	return {
+		email: account.email && !account.label.includes(account.email) ? account.email : undefined,
+		plan: account.plan,
+		priority: account.priority ?? 0,
+		state: accountState(account),
+		login,
+		fiveHour: windowView(entry?.five_hour, HOUR, 2 * HOUR),
+		sevenDay: windowView(entry?.seven_day, DAY, 2 * DAY, weekUrgent(entry)),
+		notes,
+	};
+}
+
 /** Login health, fixed width: [DEAD] revoked, [ERROR] expired or auth refused. */
 function loginTag(account: Account, entry: UsageEntry | undefined): string {
 	if (account.dead) return red("[DEAD] ");
