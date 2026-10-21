@@ -1880,6 +1880,9 @@ await check("cpool view and action print JSON for the hub", () => {
 		assert.deepEqual(JSON.parse(action.stdout), {});
 		assert.equal(!!store.readStore().accounts.find((a) => a.label === label)!.favorite, !before);
 	}
+	const mode = cpool("action", "mode", "--json");
+	assert.equal(mode.status, 0, mode.stderr);
+	assert.match(JSON.parse(mode.stdout).text, /Drain 7d ON|Normal ranking/, "mode needs no label");
 	assert.notEqual(cpool("action", "explode", "x").status, 0, "unknown act refused");
 	assert.notEqual(cpool("action", "favorite", "no-such-account").status, 0, "unknown label refused");
 });

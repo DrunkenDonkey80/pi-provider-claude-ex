@@ -279,10 +279,12 @@ switch (command) {
 	}
 
 	case "action": {
-		const [act, label, raw] = rest;
-		if (!POOL_ACTS.includes(act as PoolAct) || !label)
+		// mode and refresh act on the whole pool: label may be "" or left out.
+		const [act, label = "", raw] = rest;
+		const global = act === "mode" || act === "refresh";
+		if (!POOL_ACTS.includes(act as PoolAct) || (!label && !global))
 			die(`usage: cpool action <${POOL_ACTS.join("|")}> <label> [value] --json`);
-		if (!readStore().accounts.some((a) => a.label === label)) die(`no account "${label}"`);
+		if (!global && !readStore().accounts.some((a) => a.label === label)) die(`no account "${label}"`);
 		const value = raw === undefined ? undefined : Number(raw);
 		if (value !== undefined && !Number.isInteger(value)) die("value must be an integer");
 		console.log(JSON.stringify((await poolAction(act as PoolAct, label, value)) ?? {}));
