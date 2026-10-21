@@ -15,7 +15,9 @@
  *   cpool remove <label>
  *   cpool disable <label>        toggle out of / into rotation
  *   cpool refresh [label]        force a token refresh (all, or one)
- *   cpool daemon [--once]        single-writer keep-alive + usage sweep
+ *   cpool daemon [--once]        single-writer keep-alive + usage sweep (one per machine)
+ *   cpool view --json            the /claude-pool list as data (pi-control-hub's accounts window)
+ *   cpool action <act> <label> [value] --json   one /claude-pool menu action, result as JSON
  *   cpool warm [off|1|2|all] [30m|auto]  keep that many 5h windows running
  */
 
@@ -43,9 +45,14 @@ import {
 import {
 	applySync,
 	attachCurrentLogin,
+	type PoolAct,
+	poolAction,
+	poolView,
 	syncStatus,
 	toggleDisabled,
 } from "../commands.ts";
+
+const POOL_ACTS: PoolAct[] = ["switch", "favorite", "weekend", "mode", "refresh", "toggle", "remove", "up", "down", "priority"];
 import { parseEvery, warmLimit, warmSpacingMs, warmTargets } from "../warm.ts";
 
 const args = process.argv.slice(2);
@@ -265,6 +272,23 @@ switch (command) {
 		break;
 	}
 
+	// Data commands for other programs (pi-control-hub); JSON only, so --json is accepted but not required.
+	case "view": {
+		console.log(JSON.stringify(poolView()));
+		break;
+	}
+
+	case "action": {
+		const [act, label, raw] = rest;
+		if (!POOL_ACTS.includes(act as PoolAct) || !label)
+			die(`usage: cpool action <${POOL_ACTS.join("|")}> <label> [value] --json`);
+		if (!readStore().accounts.some((a) => a.label === label)) die(`no account "${label}"`);
+		const value = raw === undefined ? undefined : Number(raw);
+		if (value !== undefined && !Number.isInteger(value)) die("value must be an integer");
+		console.log(JSON.stringify((await poolAction(act as PoolAct, label, value)) ?? {}));
+		break;
+	}
+
 	case "daemon": {
 		console.log(
 			`cpool daemon: pid ${process.pid}, keep-alive every ${relative(KEEPALIVE_MS)} per idle account. Ctrl-C to stop.`,
@@ -285,7 +309,9 @@ switch (command) {
 				"cpool sync [url|on|off|now]  share logins with your other machines",
 				"cpool disable <label>      toggle out of / into rotation",
 				"cpool refresh [label]      force a token refresh",
-				"cpool daemon [--once]      keep-alive + usage sweep",
+				"cpool daemon [--once]      keep-alive + usage sweep (one per machine)",
+				"cpool view --json          the account list as JSON",
+				"cpool action <act> <label> [value] --json  one menu action",
 				"cpool warm [off|1|2|all] [30m|auto]  keep 5h windows running",
 			].join("\n"),
 		);

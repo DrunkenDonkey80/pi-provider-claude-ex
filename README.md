@@ -324,11 +324,18 @@ cpool disable datecs:work  # toggle out of rotation
 cpool refresh [label]      # force a token refresh
 cpool daemon [--once]      # single-writer keep-alive + usage sweep
 cpool warm [off|1|2|all]   # keep that many 5h windows already running (off)
+cpool view --json          # the /claude-pool list as JSON (for other programs)
+cpool action <act> <label> [value] --json  # one /claude-pool menu action
 ```
 
 Run `cpool daemon` (systemd/Task Scheduler/`--once` from cron) if you want the
 pool kept warm even when no pi session is open. Live sessions detect its
-heartbeat and skip their own sweeps, leaving a single writer.
+heartbeat and skip their own sweeps, leaving a single writer. Only one daemon
+runs per machine: a second one exits with "already running".
+
+`view` and `action` are how pi-control-hub shows and changes the pool without a
+Pi session. `act` is one of switch, favorite, weekend, mode, refresh, toggle,
+remove, up, down, priority (`value` -2..2). `remove` does not ask: callers confirm first.
 
 **Many sessions at once** costs about the same as one. Grants are deduplicated by
 a per-lineage lock with a consume-gate, usage polls are claimed under the cache

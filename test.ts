@@ -1857,6 +1857,33 @@ await check("auth log write failure cannot lose a successfully refreshed credent
 	}
 });
 
+await check("a second cpool daemon refuses while one is alive", async () => {
+	const { runDaemon } = await import("./pool.ts");
+	writeFileSync(store.DAEMON_PATH, JSON.stringify({ pid: process.pid + 1, at: Date.now() }));
+	await assert.rejects(runDaemon({ once: true }), /already running \(pid \d+\)/);
+	assert.equal(JSON.parse(readFileSync(store.DAEMON_PATH, "utf8")).pid, process.pid + 1, "the live daemon's heartbeat is kept");
+	assert.equal(existsSync(`${store.DAEMON_PATH}.lock`), false);
+	rmSync(store.DAEMON_PATH, { force: true });
+});
+
+await check("cpool view and action print JSON for the hub", () => {
+	const cpool = (...args: string[]) => childProcess.spawnSync(process.execPath, [join(import.meta.dirname, "bin", "cpool.ts"), ...args], { env: { ...process.env, PI_CODING_AGENT_DIR: dir }, encoding: "utf8" });
+	const view = cpool("view", "--json");
+	assert.equal(view.status, 0, view.stderr);
+	const parsed = JSON.parse(view.stdout);
+	assert(Array.isArray(parsed.rows) && typeof parsed.title === "string");
+	const label = parsed.rows.find((r: { dead: boolean }) => !r.dead)?.label ?? parsed.rows[0]?.label;
+	if (label) {
+		const before = store.readStore().accounts.find((a) => a.label === label)!.favorite;
+		const action = cpool("action", "favorite", label, "--json");
+		assert.equal(action.status, 0, action.stderr);
+		assert.deepEqual(JSON.parse(action.stdout), {});
+		assert.equal(!!store.readStore().accounts.find((a) => a.label === label)!.favorite, !before);
+	}
+	assert.notEqual(cpool("action", "explode", "x").status, 0, "unknown act refused");
+	assert.notEqual(cpool("action", "favorite", "no-such-account").status, 0, "unknown label refused");
+});
+
 console.log(results.join("\n"));
 rmSync(dir, { recursive: true, force: true });
 console.log(

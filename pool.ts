@@ -34,6 +34,7 @@ import {
 	stashPut,
 	withClaudeCodeRefreshLock,
 	withDirLock,
+	withLock,
 	writeJsonAtomic,
 } from "./store.ts";
 import { type RefreshError, refreshGrant } from "./oauth.ts";
@@ -732,11 +733,19 @@ export async function tick(opts: { usage?: boolean } = {}): Promise<void> {
 	if (picked) log(`auto-switch → ${picked}`);
 }
 
-/** Long-running single-writer sweep loop (`cpool daemon`). */
+/** Long-running single-writer sweep loop (`cpool daemon`). A second daemon refuses while one is alive. */
 export async function runDaemon(
 	opts: { tickMs?: number; once?: boolean } = {},
 ): Promise<void> {
 	const tickMs = opts.tickMs ?? TICK_MS;
+	// Check and claim under one lock, so two daemons started together can't both pass the check.
+	await withLock(DAEMON_PATH, () => {
+		if (daemonAlive()) {
+			const hb = readJson<DaemonHeartbeat | null>(DAEMON_PATH, null);
+			throw new Error(`cpool daemon already running (pid ${hb?.pid})`);
+		}
+		writeJsonAtomic(DAEMON_PATH, { pid: process.pid, at: Date.now() });
+	});
 	const beat = setInterval(() => {
 		// A heartbeat write that throws from a timer takes the whole process down.
 		try {
@@ -745,7 +754,6 @@ export async function runDaemon(
 			/* next beat retries */
 		}
 	}, DAEMON_HEARTBEAT_MS);
-	writeJsonAtomic(DAEMON_PATH, { pid: process.pid, at: Date.now() });
 	try {
 		for (;;) {
 			try {
