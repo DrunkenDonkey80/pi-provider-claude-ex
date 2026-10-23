@@ -1081,6 +1081,12 @@ await check("sync role sets how close to expiry this machine renews", async () =
 	}
 });
 
+await check("every shipped module is in package.json files", async () => {
+	const files: string[] = JSON.parse(readFileSync("package.json", "utf8")).files;
+	const modules = fs.readdirSync(".").filter((f) => f.endsWith(".ts"));
+	assert.deepEqual(modules.filter((f) => !files.includes(f)), []);
+});
+
 await check("pool commands autocomplete their arguments", async () => {
 	const commands = await import("./commands.ts");
 	assert.deepEqual(commands.argCompletions("claude-pool-role", "co")?.map((c) => c.value), ["consumer"]);

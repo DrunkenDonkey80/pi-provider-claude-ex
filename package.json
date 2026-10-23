@@ -28,6 +28,8 @@
 		"store.ts",
 		"auth-log.ts",
 		"pool.ts",
+		"sync.ts",
+		"warm.ts",
 		"usage.ts",
 		"tools.ts",
 		"format.ts",
