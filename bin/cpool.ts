@@ -18,6 +18,8 @@
  *   cpool daemon [--once]        single-writer keep-alive + usage sweep (one per machine)
  *   cpool view --json            the /claude-pool list as data (pi-control-hub's accounts window)
  *   cpool action <act> <label> [value] --json   one /claude-pool menu action, result as JSON
+ *   cpool export --json          the portable logins (refresh tokens + sync key) as JSON
+ *   cpool import                 merge an export read from stdin; prints { text } JSON
  *   cpool warm [off|1|2|all] [30m|auto]  keep that many 5h windows running
  */
 
@@ -45,6 +47,8 @@ import {
 import {
 	applySync,
 	attachCurrentLogin,
+	exportPayload,
+	importPayload,
 	type PoolAct,
 	poolAction,
 	poolView,
@@ -288,6 +292,21 @@ switch (command) {
 		const value = raw === undefined ? undefined : Number(raw);
 		if (value !== undefined && !Number.isInteger(value)) die("value must be an integer");
 		console.log(JSON.stringify((await poolAction(act as PoolAct, label, value)) ?? {}));
+		break;
+	}
+
+	// Sensitive: refresh tokens and the sync key. The hub's accounts window copies this to move logins.
+	case "export": {
+		console.log(JSON.stringify(exportPayload(), null, 2));
+		break;
+	}
+
+	case "import": {
+		const text = readFileSync(0, "utf8").trim();
+		if (!text) die("cpool import: paste an export on stdin");
+		let labels: string[] = [];
+		try { labels = await importPayload(text); } catch (e) { die(`Import failed: ${(e as Error).message}`); }
+		console.log(JSON.stringify({ text: `Imported ${labels.length} account(s): ${labels.join(", ")}.` }));
 		break;
 	}
 

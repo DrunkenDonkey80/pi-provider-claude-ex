@@ -367,6 +367,30 @@ export async function poolAction(act: PoolAct, label: string, value?: number): P
 	return undefined;
 }
 
+/** The portable logins: accounts plus the sync repo+key, so one export wires the other machine to the shared repo. */
+export function exportPayload() {
+	const store = readStore();
+	return { accounts: store.accounts, sync: store.sync };
+}
+
+/** Merge an export (pasted JSON) into the pool; returns the imported labels. */
+export async function importPayload(text: string): Promise<string[]> {
+	const imported = parseExport(text), syncConfig = parseSyncConfig(text);
+	await mutateStore((store) => {
+		for (const account of imported) {
+			const i = store.accounts.findIndex((a) => a.label === account.label);
+			// Merge over an existing label: the imported refresh token wins,
+			// local cooldown/usage bookkeeping is irrelevant on a new machine.
+			if (i >= 0) store.accounts[i] = { ...store.accounts[i], ...account };
+			else store.accounts.push(account);
+		}
+		if (syncConfig) store.sync = syncConfig;
+		if (!store.active) store.active = pickActive(store);
+	});
+	invalidateSnapshot();
+	return imported.map((a) => a.label);
+}
+
 /** The /claude-pool list as data: the menu's own row text (ANSI colours) plus flags, in display order. */
 export function poolView() {
 	const store = readStore(), cache = readUsage(), active = pickActive(store);
@@ -560,14 +584,11 @@ export function setupCommands(pi: ExtensionAPI): void {
 		description:
 			"Write the pooled Claude logins to a portable file (and the clipboard); optional file path",
 		handler: async (args, ctx) => {
-			const accounts = readStore().accounts;
+			const payload = exportPayload(), accounts = payload.accounts;
 			if (!accounts.length) {
 				ctx.ui.notify("No pooled accounts to export.", "warning");
 				return;
 			}
-			// The sync repo+key ride along: one export, and the other machine is
-			// wired to the shared repo without retyping a 64-char secret.
-			const payload = { accounts, sync: readStore().sync };
 			const path = args.trim().replace(/^["']|["']$/g, "") || EXPORT_PATH;
 			try {
 				writeJsonAtomic(path, payload);
@@ -595,10 +616,10 @@ export function setupCommands(pi: ExtensionAPI): void {
 				""
 			).trim();
 			if (!answer) return;
-			let imported: Account[];
+			let labels: string[];
 			try {
 				const path = answer.replace(/^["']|["']$/g, "");
-				imported = parseExport(
+				labels = await importPayload(
 					answer.startsWith("{") || answer.startsWith("[")
 						? answer
 						: readFileSync(path, "utf-8"),
@@ -607,27 +628,8 @@ export function setupCommands(pi: ExtensionAPI): void {
 				ctx.ui.notify(`Import failed: ${(e as Error).message}`, "warning");
 				return;
 			}
-			const syncConfig = parseSyncConfig(
-				answer.startsWith("{") || answer.startsWith("[")
-					? answer
-					: readFileSync(answer.replace(/^["']|["']$/g, ""), "utf-8"),
-			);
-			await mutateStore((store) => {
-				for (const account of imported) {
-					const i = store.accounts.findIndex((a) => a.label === account.label);
-					// Merge over an existing label: the imported refresh token wins,
-					// local cooldown/usage bookkeeping is irrelevant on a new machine.
-					if (i >= 0) store.accounts[i] = { ...store.accounts[i], ...account };
-					else store.accounts.push(account);
-				}
-				if (syncConfig) store.sync = syncConfig;
-				if (!store.active) store.active = pickActive(store);
-			});
-			invalidateSnapshot();
 			ctx.ui.notify(
-				`Imported ${imported.length} account(s): ${imported
-					.map((a) => a.label)
-					.join(", ")}.\nRun /claude-pool to check them.`,
+				`Imported ${labels.length} account(s): ${labels.join(", ")}.\nRun /claude-pool to check them.`,
 				"info",
 			);
 		},

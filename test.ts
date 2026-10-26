@@ -1872,7 +1872,7 @@ await check("a second cpool daemon refuses while one is alive", async () => {
 	rmSync(store.DAEMON_PATH, { force: true });
 });
 
-await check("cpool view and action print JSON for the hub", () => {
+await check("cpool view and action print JSON for the hub", async () => {
 	const cpool = (...args: string[]) => childProcess.spawnSync(process.execPath, [join(import.meta.dirname, "bin", "cpool.ts"), ...args], { env: { ...process.env, PI_CODING_AGENT_DIR: dir }, encoding: "utf8" });
 	const view = cpool("view", "--json");
 	assert.equal(view.status, 0, view.stderr);
@@ -1890,6 +1890,17 @@ await check("cpool view and action print JSON for the hub", () => {
 	assert.equal(mode.status, 0, mode.stderr);
 	assert.match(JSON.parse(mode.stdout).text, /Drain 7d ON|Normal ranking/, "mode needs no label");
 	assert.notEqual(cpool("action", "explode", "x").status, 0, "unknown act refused");
+	const exported = cpool("export", "--json");
+	assert.equal(exported.status, 0, exported.stderr);
+	const payload = JSON.parse(exported.stdout);
+	assert.deepEqual(payload.accounts.map((a: { label: string }) => a.label), store.readStore().accounts.map((a) => a.label));
+	const one = { accounts: [{ ...payload.accounts[0], label: "pasted" }] };
+	const imported = childProcess.spawnSync(process.execPath, [join(import.meta.dirname, "bin", "cpool.ts"), "import"], { env: { ...process.env, PI_CODING_AGENT_DIR: dir }, encoding: "utf8", input: JSON.stringify(one) });
+	assert.equal(imported.status, 0, imported.stderr);
+	assert.match(JSON.parse(imported.stdout).text, /Imported 1 account\(s\): pasted/);
+	assert(store.readStore().accounts.some((a) => a.label === "pasted"), "import merges into the store");
+	await store.mutateStore((s) => { s.accounts = s.accounts.filter((a) => a.label !== "pasted"); });
+	assert.notEqual(childProcess.spawnSync(process.execPath, [join(import.meta.dirname, "bin", "cpool.ts"), "import"], { env: { ...process.env, PI_CODING_AGENT_DIR: dir }, encoding: "utf8", input: "junk" }).status, 0, "junk refused");
 	assert.notEqual(cpool("action", "favorite", "no-such-account").status, 0, "unknown label refused");
 });
 
