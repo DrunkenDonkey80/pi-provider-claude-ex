@@ -191,6 +191,19 @@ function setupPool(pi: ExtensionAPI): void {
 						},
 					};
 				}
+				// Refresh failed (often another machine just rotated this lineage and
+				// sync hasn't caught up): move on to another account instead of stopping.
+				const next = await pickNext();
+				if (next && next !== previous) {
+					await ensureFresh(next);
+					ctx.ui.notify(`Claude account "${previous}" token was revoked → switched to "${next}", retrying.`, "warning");
+					return {
+						message: {
+							...event.message,
+							errorMessage: `Claude account "${previous}" had a revoked token; switched to "${next}" — please retry your request.`,
+						},
+					};
+				}
 				const broken = syncOn(readStore().sync) ? syncHealth().error : undefined;
 				ctx.ui.notify(
 					account && !account.dead && broken
