@@ -1087,6 +1087,22 @@ await check("every shipped module is in package.json files", async () => {
 	assert.deepEqual(modules.filter((f) => !files.includes(f)), []);
 });
 
+await check("re-login lands on exactly the clicked account and refuses the wrong email or org", async () => {
+	const commands = await import("./commands.ts");
+	seed([
+		acct("datecs:datecs", { email: "flex@x.bg", orgUuid: "team-org", plan: "team", org: "Team", dead: true }),
+		acct("datecs:home", { email: "flex@x.bg", orgUuid: "pro-org", plan: "pro", org: "Home" }),
+	]);
+	const cred = { refresh: "rt-new", access: "at-new", expires: Date.now() + 8 * 3_600_000, refreshExpires: Date.now() + 30 * 86_400_000 };
+	await assert.rejects(commands.reloginAccount("datecs:datecs", cred, { email: "other@x.bg", orgUuid: "team-org" }), /other@x.bg/);
+	await assert.rejects(commands.reloginAccount("datecs:datecs", cred, { email: "flex@x.bg", orgUuid: "pro-org", org: "Home", plan: "pro" }), /you picked Home \[pro\]/);
+	const saved = await commands.reloginAccount("datecs:datecs", cred, { email: "Flex@x.bg", orgUuid: "team-org", plan: "team" });
+	assert.equal(saved.refresh, "rt-new");
+	assert.equal(saved.dead, false);
+	assert.equal(saved.refreshExpires, cred.refreshExpires);
+	assert.equal(store.readStore().accounts.find((a) => a.label === "datecs:home")?.refresh, "rt-datecs:home-1");
+});
+
 await check("pool commands autocomplete their arguments", async () => {
 	const commands = await import("./commands.ts");
 	assert.deepEqual(commands.argCompletions("claude-pool-role", "co")?.map((c) => c.value), ["consumer"]);
@@ -1246,7 +1262,7 @@ await check("accountLine shows state and quota", () => {
 	const line = format.accountLine(
 		acct("x", {
 			cooldownUntil: Date.now() + 600_000,
-			refreshExpires: Date.parse("2026-11-04"),
+			refreshExpires: Date.now() + 30 * 86_400_000, // a live login
 		}),
 		0,
 		{

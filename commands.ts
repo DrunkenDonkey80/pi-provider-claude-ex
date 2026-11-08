@@ -32,7 +32,7 @@ import {
 	sortAccountsForDisplay,
 } from "./format.ts";
 import { parseEvery, warmSpacingMs, warmTargets } from "./warm.ts";
-import { collectUsage, readUsage } from "./usage.ts";
+import { clearUsageError, collectUsage, readUsage } from "./usage.ts";
 import { type Profile, fetchProfile } from "./oauth.ts";
 
 /** Minimal structural types for ctx.ui.custom — keeps this file independent of
@@ -243,8 +243,38 @@ async function labelByEmail(ctx: Ctx): Promise<string | undefined | null> {
 	return pick ? same[options.indexOf(pick)]?.label ?? null : null;
 }
 
+/**
+ * A re-login for exactly `label` (the hub's Re-login button). Never chosen by
+ * identity: one email can hold several subscriptions (team vs pro), so the
+ * login must prove it is the same email AND the same org/plan as the account.
+ */
+export async function reloginAccount(
+	label: string,
+	cred: { refresh: string; access: string; expires: number; refreshExpires?: number },
+	profile: Profile,
+): Promise<Account> {
+	const account = readStore().accounts.find((a) => a.label === label);
+	if (!account) throw new Error(`no pool account "${label}"`);
+	if (!profile.email) throw new Error("could not read the signed-in account's email, so it can't be checked; try again");
+	if (account.email && profile.email.toLowerCase() !== account.email.toLowerCase())
+		throw new Error(`you signed in as ${profile.email}, but "${label}" is ${account.email}; sign in with ${account.email}`);
+	const picked = `${profile.org ?? "an organization"}${profile.plan ? ` [${profile.plan}]` : ""}`;
+	if ((account.orgUuid && profile.orgUuid && account.orgUuid !== profile.orgUuid) || (account.plan && profile.plan && account.plan !== profile.plan))
+		throw new Error(`you picked ${picked}, but "${label}" is ${account.org ?? "another organization"}${account.plan ? ` [${account.plan}]` : ""}; sign in again and pick that one`);
+	await upsertAccount(label, {
+		...cred,
+		uuid: profile.uuid ?? account.uuid,
+		orgUuid: profile.orgUuid ?? account.orgUuid,
+		email: profile.email,
+		org: profile.org ?? account.org,
+		plan: profile.plan ?? account.plan,
+	});
+	await clearUsageError(label);
+	return readStore().accounts.find((a) => a.label === label)!;
+}
+
 /** Publish a just-added login at once, so no other machine can outlive it. */
-async function publishNow(label: string): Promise<string> {
+export async function publishNow(label: string): Promise<string> {
 	const { sync, accounts } = readStore();
 	const account = accounts.find((a) => a.label === label);
 	if (!account || !syncOn(sync)) return "";
@@ -976,6 +1006,7 @@ export async function upsertAccount(
 		email?: string;
 		org?: string;
 		plan?: string;
+		refreshExpires?: number;
 	},
 ): Promise<number> {
 	const count = await mutateStore((store) => {
@@ -994,7 +1025,7 @@ export async function upsertAccount(
 				...store.accounts[index], ...entry,
 				// A new login cannot inherit the replaced login's deadline.
 				refreshExpires: store.accounts[index].refresh === creds.refresh
-					? store.accounts[index].refreshExpires : undefined,
+					? store.accounts[index].refreshExpires : creds.refreshExpires,
 				// Re-adding the same credential is not a new login: it must not outrank sync.
 				loginAt: store.accounts[index].refresh === creds.refresh
 					? store.accounts[index].loginAt : entry.loginAt,

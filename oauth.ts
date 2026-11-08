@@ -147,7 +147,8 @@ async function exchangeAuthorizationCode(
 	code: string,
 	state: string,
 	verifier: string,
-): Promise<AnthropicOAuthCredential> {
+	redirectUri = REDIRECT_URI,
+): Promise<AnthropicOAuthCredential & { refreshExpires?: number }> {
 	let responseBody: string;
 	try {
 		responseBody = await postJson(TOKEN_URL, {
@@ -155,7 +156,7 @@ async function exchangeAuthorizationCode(
 			client_id: CLIENT_ID,
 			code,
 			state,
-			redirect_uri: REDIRECT_URI,
+			redirect_uri: redirectUri,
 			code_verifier: verifier,
 		});
 	} catch (error) {
@@ -167,6 +168,7 @@ async function exchangeAuthorizationCode(
 		refresh_token?: string;
 		access_token?: string;
 		expires_in?: number;
+		refresh_token_expires_in?: number;
 	};
 	try {
 		tokenData = JSON.parse(responseBody) as typeof tokenData;
@@ -189,6 +191,42 @@ async function exchangeAuthorizationCode(
 		refresh: tokenData.refresh_token,
 		access: tokenData.access_token,
 		expires: Date.now() + tokenData.expires_in * 1000 - 5 * 60 * 1000,
+		refreshExpires: tokenData.refresh_token_expires_in
+			? Date.now() + tokenData.refresh_token_expires_in * 1000
+			: undefined,
+	};
+}
+
+/**
+ * Copy-code sign-in (pi-ai's loginAnthropicCopyCode): no local callback server,
+ * Anthropic shows "code#state" for the user to paste back. login_hint pre-fills
+ * the email where Anthropic honours it (unverified; harmless if ignored).
+ */
+export function startCopyCodeLogin(email?: string): {
+	url: string;
+	finish: (input: string) => Promise<AnthropicOAuthCredential & { refreshExpires?: number }>;
+} {
+	const redirect = "https://platform.claude.com/oauth/code/callback";
+	const verifier = randomBytes(32).toString("base64url");
+	const params = new URLSearchParams({
+		code: "true",
+		client_id: CLIENT_ID,
+		response_type: "code",
+		redirect_uri: redirect,
+		scope: SCOPES,
+		code_challenge: createHash("sha256").update(verifier).digest("base64url"),
+		code_challenge_method: "S256",
+		state: verifier,
+	});
+	if (email) params.set("login_hint", email);
+	return {
+		url: `${AUTHORIZE_URL}?${params}`,
+		finish: async (input) => {
+			const parsed = parseAuthorizationInput(input);
+			if (parsed.state && parsed.state !== verifier) throw new Error("the pasted code is from a different sign-in (state mismatch)");
+			if (!parsed.code) throw new Error("no authorization code in the pasted text");
+			return exchangeAuthorizationCode(parsed.code, parsed.state ?? verifier, verifier, redirect);
+		},
 	};
 }
 

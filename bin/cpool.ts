@@ -20,11 +20,14 @@
  *   cpool action <act> <label> [value] --json   one /claude-pool menu action, result as JSON
  *   cpool export --json          the portable logins (refresh tokens + sync key) as JSON
  *   cpool import                 merge an export read from stdin; prints { text } JSON
+ *   cpool login <label> --json   re-login exactly that account (copy-code sign-in, code#state on stdin)
  *   cpool warm [off|1|2|all] [30m|auto]  keep that many 5h windows running
  */
 
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { createInterface } from "node:readline";
+import { fetchProfile, startCopyCodeLogin } from "../oauth.ts";
 import { AGENT_DIR, mutateStore, readStore } from "../store.ts";
 import {
 	KEEPALIVE_MS,
@@ -52,6 +55,8 @@ import {
 	type PoolAct,
 	poolAction,
 	poolView,
+	publishNow,
+	reloginAccount,
 	syncStatus,
 	toggleDisabled,
 } from "../commands.ts";
@@ -307,6 +312,36 @@ switch (command) {
 		let labels: string[] = [];
 		try { labels = await importPayload(text); } catch (e) { die(`Import failed: ${(e as Error).message}`); }
 		console.log(JSON.stringify({ text: `Imported ${labels.length} account(s): ${labels.join(", ")}.` }));
+		break;
+	}
+
+	// The hub's Re-login button. JSON lines only on stdout: {url,...}, then {ok,...} or {error}.
+	case "login": {
+		const say = (value: unknown) => console.log(JSON.stringify(value));
+		const fail = (error: string): never => {
+			say({ error });
+			process.exit(1);
+		};
+		const account = readStore().accounts.find((a) => a.label === target);
+		if (!account) fail(target ? `no pool account "${target}"` : "usage: cpool login <label> --json");
+		const login = startCopyCodeLogin(account!.email);
+		say({ url: login.url, label: account!.label, email: account!.email ?? null });
+		const input = await new Promise<string>((resolve) => {
+			const lines = createInterface({ input: process.stdin });
+			const timer = setTimeout(() => fail("no code pasted within 10 minutes"), 10 * 60_000);
+			const cancel = () => fail("sign-in cancelled");
+			lines.once("close", cancel);
+			lines.once("line", (line) => { clearTimeout(timer); lines.off("close", cancel); lines.close(); resolve(line); });
+		});
+		try {
+			const cred = await login.finish(input);
+			const profile = await fetchProfile(cred.access);
+			const saved = await reloginAccount(account!.label, cred, profile);
+			console.error(`[cpool] re-logged ${saved.label}${await publishNow(saved.label)}`);
+			say({ ok: true, label: saved.label, email: saved.email ?? null, refreshExpires: saved.refreshExpires ?? null });
+		} catch (e) {
+			fail((e as Error).message.split("; details=")[0]);
+		}
 		break;
 	}
 
