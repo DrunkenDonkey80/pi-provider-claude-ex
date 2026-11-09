@@ -1087,6 +1087,28 @@ await check("every shipped module is in package.json files", async () => {
 	assert.deepEqual(modules.filter((f) => !files.includes(f)), []);
 });
 
+await check("copy-code login sends exactly what Pi's /login sends", async () => {
+	const { startCopyCodeLogin } = await import("./oauth.ts");
+	const login = startCopyCodeLogin();
+	const url = new URL(login.url);
+	assert.deepEqual([...url.searchParams.keys()].sort(), ["client_id", "code", "code_challenge", "code_challenge_method", "redirect_uri", "response_type", "scope", "state"]);
+	const state = url.searchParams.get("state")!;
+	let body: Record<string, string> = {};
+	const realFetch = globalThis.fetch;
+	globalThis.fetch = (async (_u: string, init: { body: string }) => {
+		body = JSON.parse(init.body);
+		return new Response(JSON.stringify({ access_token: "a", refresh_token: "r", expires_in: 3600 }));
+	}) as typeof fetch;
+	try { await login.finish(` thecode#${state}
+`); } finally { globalThis.fetch = realFetch; }
+	assert.equal(body.code, "thecode");
+	assert.equal(body.state, state);
+	assert.equal(body.code_verifier, state);
+	assert.equal(body.redirect_uri, "https://platform.claude.com/oauth/code/callback");
+	assert.equal(body.grant_type, "authorization_code");
+	await assert.rejects(login.finish("thecode#otherstate"), /state mismatch/);
+});
+
 await check("re-login lands on exactly the clicked account and refuses the wrong email or org", async () => {
 	const commands = await import("./commands.ts");
 	seed([

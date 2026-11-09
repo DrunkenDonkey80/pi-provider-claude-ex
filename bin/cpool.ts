@@ -324,7 +324,7 @@ switch (command) {
 		};
 		const account = readStore().accounts.find((a) => a.label === target);
 		if (!account) fail(target ? `no pool account "${target}"` : "usage: cpool login <label> --json");
-		const login = startCopyCodeLogin(account!.email);
+		const login = startCopyCodeLogin();
 		say({ url: login.url, label: account!.label, email: account!.email ?? null });
 		const input = await new Promise<string>((resolve) => {
 			const lines = createInterface({ input: process.stdin });

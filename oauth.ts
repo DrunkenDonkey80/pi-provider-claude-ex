@@ -199,10 +199,11 @@ async function exchangeAuthorizationCode(
 
 /**
  * Copy-code sign-in (pi-ai's loginAnthropicCopyCode): no local callback server,
- * Anthropic shows "code#state" for the user to paste back. login_hint pre-fills
- * the email where Anthropic honours it (unverified; harmless if ignored).
+ * Anthropic shows "code#state" for the user to paste back. Keep the request
+ * exactly as Pi's: an extra login_hint got the code refused at exchange
+ * ("Invalid 'code' in request").
  */
-export function startCopyCodeLogin(email?: string): {
+export function startCopyCodeLogin(): {
 	url: string;
 	finish: (input: string) => Promise<AnthropicOAuthCredential & { refreshExpires?: number }>;
 } {
@@ -218,7 +219,6 @@ export function startCopyCodeLogin(email?: string): {
 		code_challenge_method: "S256",
 		state: verifier,
 	});
-	if (email) params.set("login_hint", email);
 	return {
 		url: `${AUTHORIZE_URL}?${params}`,
 		finish: async (input) => {
