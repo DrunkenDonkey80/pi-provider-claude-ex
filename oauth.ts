@@ -644,8 +644,10 @@ function parseResets(raw: unknown): UsageSnapshot["resets"] {
 	const grants: { left: number; ends_at?: string }[] = [];
 	for (const g of Array.isArray(ce.grants) ? ce.grants : []) {
 		if (!g || typeof g !== "object") continue;
-		const { resets_left, paused, starts_at, ends_at } = g as Record<string, unknown>;
+		const { resets_left, paused, starts_at, ends_at, clears } = g as Record<string, unknown>;
 		if (typeof resets_left !== "number" || resets_left <= 0 || paused === true) continue;
+		// Model-launch resets (e.g. Fable) clear the 5h window but not the week.
+		if (Array.isArray(clears) && !clears.includes("seven_day")) continue;
 		if (typeof starts_at === "string" && Date.parse(starts_at) > Date.now()) continue;
 		const ends = typeof ends_at === "string" && Number.isFinite(Date.parse(ends_at));
 		grants.push({ left: resets_left, ends_at: ends ? (ends_at as string) : undefined });

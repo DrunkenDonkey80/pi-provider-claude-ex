@@ -1327,10 +1327,12 @@ await check("limit resets parse defensively and render by expiry", async () => {
 			g({ starts_at: iso(86_400_000) }),
 			g({ ends_at: iso(-1000) }),
 			g({ resets_left: "1" }),
+			g({ clears: ["five_hour", "seven_day_overage_included"] }),
+			g({ resets_left: 1, clears: ["five_hour", "seven_day"] }),
 			"junk",
 		],
 	});
-	assert.match(plain(ok), /resets 2 \(10d  0h\)/);
+	assert.match(plain(ok), /resets 3 \(10d  0h\)/, "week-clearing reset counts, Fable-style 5h-only does not");
 	assert.ok(!ok.includes("\u001b[31mresets"), "10 days out is not red");
 	assert.ok(line({ eligible: true, grants: [g({ ends_at: iso(2 * 86_400_000) })] }).includes("\u001b[31mresets 1"));
 	assert.match(format.accountLine(acct("x", { dead: true }), 0, undefined, false), /\[DEAD\]/);
